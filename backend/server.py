@@ -36,6 +36,18 @@ from datetime import datetime, timezone, timedelta
 import random
 import math
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from simulator import (
+    tick_drone_simulation,
+    run_drone_simulation_loop,
+    DRONE_TICK_INTERVAL_S,
+    DRONE_STEP_DEG,
+    DRONE_ARRIVED_DEG,
+    DRONE_MIN_BATTERY,
+)
+# Star-import the Pydantic models so route handlers below can keep using
+# them by bare name (Drone, Zone, etc.) instead of `models.Drone`. New
+# request/response models go in models.py, not here.
+from models import *  # noqa: F401,F403
 
 # Centralized LLM-chat builder. Reads provider/model from env at *call time*
 # (not module import) so a `.env` reload — or test-injected env override — is
@@ -140,31 +152,7 @@ ROLE_PERMISSIONS = {
     "viewer": ["dashboard", "map"]
 }
 
-# ==================== AUTH MODELS ====================
-
-class UserRegister(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
-    role: str = "viewer"
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    name: str
-    role: str
-    created_at: datetime
-
-class PasswordReset(BaseModel):
-    token: str
-    new_password: str
-
-class ForgotPassword(BaseModel):
-    email: EmailStr
+# ==================== AUTH MODELS — moved to models.py ====================
 
 # ==================== WEBSOCKET MANAGER ====================
 
@@ -189,303 +177,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ==================== EXISTING MODELS ====================
-
-class DroneBase(BaseModel):
-    name: str
-    zone_id: Optional[str] = None
-    status: str = "idle"
-    battery: float = 100
-    latitude: float = 0.0
-    longitude: float = 0.0
-    altitude: float = 50.0
-    mission_type: Optional[str] = None
-
-class Drone(DroneBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_active: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DroneCreate(DroneBase):
-    pass
-
-class DroneUpdate(BaseModel):
-    name: Optional[str] = None
-    zone_id: Optional[str] = None
-    status: Optional[str] = None
-    battery: Optional[float] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    altitude: Optional[float] = None
-    mission_type: Optional[str] = None
-
-class ZoneBase(BaseModel):
-    name: str
-    description: Optional[str] = None
-    zone_type: str = "forest"
-    priority: str = "medium"
-    center_lat: float = 0.0
-    center_lng: float = 0.0
-    radius_km: float = 5.0
-    biodiversity_index: float = 0.5
-    soil_health: float = 0.5
-    predator_prey_balance: float = 0.5
-    vegetation_coverage: float = 0.5
-
-class Zone(ZoneBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class ZoneCreate(ZoneBase):
-    pass
-
-class ZoneUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    zone_type: Optional[str] = None
-    priority: Optional[str] = None
-    biodiversity_index: Optional[float] = None
-    soil_health: Optional[float] = None
-    predator_prey_balance: Optional[float] = None
-    vegetation_coverage: Optional[float] = None
-
-class SensorBase(BaseModel):
-    name: str
-    sensor_type: str
-    zone_id: Optional[str] = None
-    latitude: float = 0.0
-    longitude: float = 0.0
-    status: str = "active"
-    current_value: float = 0.0
-    unit: str = ""
-
-class Sensor(SensorBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_reading: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class SensorCreate(SensorBase):
-    pass
-
-class AlertBase(BaseModel):
-    title: str
-    message: str
-    severity: str = "info"
-    zone_id: Optional[str] = None
-    drone_id: Optional[str] = None
-    alert_type: str = "system"
-
-class Alert(AlertBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    is_read: bool = False
-
-class AlertCreate(AlertBase):
-    pass
-
-class AIAnalysisRequest(BaseModel):
-    zone_id: Optional[str] = None
-    analysis_type: str = "general"
-
-class AIAnalysisResponse(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    zone_id: Optional[str] = None
-    analysis_type: str
-    recommendations: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DeployMissionRequest(BaseModel):
-    drone_ids: List[str]
-    zone_id: str
-    mission_type: str
-
-class DashboardStats(BaseModel):
-    total_drones: int
-    active_drones: int
-    total_zones: int
-    critical_zones: int
-    total_sensors: int
-    active_sensors: int
-    unread_alerts: int
-    avg_biodiversity: float
-    avg_soil_health: float
-
-# Patrol Models
-class PatrolWaypoint(BaseModel):
-    zone_id: str
-    zone_name: str
-    priority_score: float
-    estimated_duration_mins: int
-    tasks: List[str]
-    latitude: float
-    longitude: float
-
-class PatrolScheduleBase(BaseModel):
-    name: str
-    drone_ids: List[str]
-    schedule_type: str = "daily"
-    start_time: Optional[str] = None
-    status: str = "pending"
-
-class PatrolSchedule(PatrolScheduleBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    waypoints: List[dict] = []
-    total_distance_km: float = 0.0
-    estimated_duration_mins: int = 0
-    efficiency_score: float = 0.0
-    ai_reasoning: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class PatrolScheduleCreate(BaseModel):
-    name: str
-    drone_ids: List[str]
-    schedule_type: str = "daily"
-    optimization_priority: str = "balanced"
-
-class PatrolScheduleUpdate(BaseModel):
-    status: Optional[str] = None
-    start_time: Optional[str] = None
-
-class PatrolReportBase(BaseModel):
-    patrol_id: str
-    patrol_name: str
-    status: str = "completed"
-    total_waypoints_visited: int = 0
-    total_duration_mins: int = 0
-    total_distance_km: float = 0.0
-
-class PatrolReport(PatrolReportBase):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    drone_ids: List[str] = []
-    zone_data_collected: List[dict] = []
-    biodiversity_observations: List[dict] = []
-    soil_samples_collected: int = 0
-    wildlife_sightings: int = 0
-    anomalies_detected: List[dict] = []
-    efficiency_achieved: float = 0.0
-    ai_summary: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-# Weather Models (Mocked)
-class WeatherData(BaseModel):
-    zone_id: str
-    zone_name: str
-    temperature: float
-    humidity: float
-    wind_speed: float
-    conditions: str
-    forecast: List[dict] = []
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-# Intervention Rules Models
-class InterventionRule(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    description: str
-    condition_type: str  # biodiversity, soil_health, predator_prey
-    condition_operator: str  # lt, gt, eq
-    condition_value: float
-    condition_duration_days: int = 1
-    action_type: str  # deploy_drones, alert, schedule_patrol
-    action_config: dict = {}
-    is_active: bool = True
-    created_by: Optional[str] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class InterventionRuleCreate(BaseModel):
-    name: str
-    description: str
-    condition_type: str
-    condition_operator: str
-    condition_value: float
-    condition_duration_days: int = 1
-    action_type: str
-    action_config: dict = {}
-
-# Forecasting Models
-class EcosystemForecast(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    zone_id: str
-    zone_name: str
-    forecast_type: str  # biodiversity, soil_health
-    current_value: float
-    predictions: List[dict] = []  # [{days: 30, value: 0.45, confidence: 0.8}]
-    trend: str  # improving, declining, stable
-    risk_level: str  # low, medium, high, critical
-    ai_analysis: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-# Geofencing Models
-class Geofence(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    zone_id: Optional[str] = None
-    fence_type: str = "protected"  # protected, restricted, monitored
-    coordinates: List[dict] = []  # polygon points
-    center_lat: float = 0.0
-    center_lng: float = 0.0
-    radius_km: float = 1.0
-    alerts_enabled: bool = True
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class GeofenceCreate(BaseModel):
-    name: str
-    zone_id: Optional[str] = None
-    fence_type: str = "protected"
-    center_lat: float
-    center_lng: float
-    radius_km: float
-
-# Team/Organization Models
-class Organization(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    description: str = ""
-    admin_user_id: str
-    member_ids: List[str] = []
-    shared_zone_ids: List[str] = []
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class Task(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    title: str
-    description: str = ""
-    assigned_to: Optional[str] = None
-    zone_id: Optional[str] = None
-    priority: str = "medium"
-    status: str = "pending"  # pending, in_progress, completed
-    due_date: Optional[datetime] = None
-    created_by: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class TaskCreate(BaseModel):
-    title: str
-    description: str = ""
-    assigned_to: Optional[str] = None
-    zone_id: Optional[str] = None
-    priority: str = "medium"
-    due_date: Optional[str] = None
-
-class Comment(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    entity_type: str  # zone, patrol, task
-    entity_id: str
-    user_id: str
-    user_name: str
-    content: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class SpeciesUploadRequest(BaseModel):
-    image_data_url: str
-    zone_id: Optional[str] = None
-    image_filename: Optional[str] = None
-    image_content_type: Optional[str] = None
+# ==================== ENTITY/REQUEST/RESPONSE MODELS — moved to models.py ====================
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -1214,7 +906,7 @@ async def get_drone_camera_feeds():
 _DRONE_ID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 @api_router.get("/drones/{drone_id}", response_model=Drone)
-async def get_drone(drone_id: str = Path(..., regex=_DRONE_ID_PATTERN)):
+async def get_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
     drone = await db.drones.find_one({"id": drone_id}, {"_id": 0})
     if not drone:
         raise HTTPException(status_code=404, detail="Drone not found")
@@ -1231,7 +923,7 @@ async def create_drone(drone_data: DroneCreate):
     return drone
 
 @api_router.put("/drones/{drone_id}", response_model=Drone)
-async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., regex=_DRONE_ID_PATTERN)):
+async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
@@ -1244,7 +936,7 @@ async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., regex
     return drone
 
 @api_router.delete("/drones/{drone_id}")
-async def delete_drone(drone_id: str = Path(..., regex=_DRONE_ID_PATTERN)):
+async def delete_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
     result = await db.drones.delete_one({"id": drone_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Drone not found")
@@ -1762,7 +1454,7 @@ async def drone_tick(user: dict = Depends(require_role(["admin"]))):
     Internal helper — lets the test suite drive the simulator deterministically
     instead of sleeping for `DRONE_TICK_INTERVAL_S`. Excluded from OpenAPI.
     """
-    updates = await _tick_drone_simulation()
+    updates = await tick_drone_simulation(db, manager)
     return {"updated": len(updates), "drones": updates}
 
 # WebSocket
@@ -1869,91 +1561,8 @@ async def startup_events():
 - GET /api/auth/me
 """)
     
-    # Start drone simulation
-    asyncio.create_task(simulate_drone_movements())
-
-# Drone simulation — converges drones toward their assigned zone center each
-# tick (replaces the previous random-jitter loop, which was the visible source
-# of "no dynamic operation"). Position diffs are broadcast over the WebSocket
-# so connected clients update in real time without polling.
-
-DRONE_TICK_INTERVAL_S = 5
-DRONE_STEP_DEG = 0.05      # ≈5 km horizontal move per tick at the equator
-DRONE_ARRIVED_DEG = 0.04   # within this distance the drone is "on station"
-DRONE_MIN_BATTERY = 5.0
-
-async def _tick_drone_simulation() -> List[dict]:
-    """One simulation tick. Returns the list of broadcast payloads (also
-    extracted so tests can drive the simulator deterministically)."""
-    drones = await db.drones.find(
-        {"status": {"$in": ["patrolling", "deployed"]}}, {"_id": 0}
-    ).to_list(200)
-
-    updates: List[dict] = []
-    for drone in drones:
-        target = None
-        if drone.get("zone_id"):
-            zone = await db.zones.find_one({"id": drone["zone_id"]}, {"_id": 0})
-            if zone:
-                target = (zone.get("center_lat", 0.0), zone.get("center_lng", 0.0))
-
-        lat, lng = drone.get("latitude", 0.0), drone.get("longitude", 0.0)
-        if target is None:
-            # Unassigned drone: hover. (Battery still drains while hovering.)
-            new_lat, new_lng, dist_moved = lat, lng, 0.0
-        else:
-            dlat, dlng = target[0] - lat, target[1] - lng
-            dist = math.hypot(dlat, dlng)
-            if dist <= DRONE_ARRIVED_DEG:
-                new_lat, new_lng, dist_moved = target[0], target[1], dist
-            else:
-                ratio = DRONE_STEP_DEG / dist
-                new_lat = lat + dlat * ratio
-                new_lng = lng + dlng * ratio
-                dist_moved = DRONE_STEP_DEG
-
-        battery = max(DRONE_MIN_BATTERY, drone.get("battery", 100) - (0.05 + dist_moved * 5))
-        battery = round(battery, 2)
-        last_active = datetime.now(timezone.utc).isoformat()
-
-        await db.drones.update_one(
-            {"id": drone["id"]},
-            {"$set": {
-                "latitude": new_lat,
-                "longitude": new_lng,
-                "battery": battery,
-                "last_active": last_active,
-            }},
-        )
-
-        updates.append({
-            "id": drone["id"],
-            "name": drone.get("name"),
-            "latitude": new_lat,
-            "longitude": new_lng,
-            "battery": battery,
-            "status": drone.get("status"),
-            "zone_id": drone.get("zone_id"),
-        })
-
-    if updates:
-        await manager.broadcast({
-            "type": "drone_positions",
-            "drones": updates,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
-
-    return updates
-
-async def simulate_drone_movements():
-    while True:
-        try:
-            await _tick_drone_simulation()
-        except Exception as exc:
-            logging.warning("drone simulation tick failed: %s", exc)
-            await asyncio.sleep(DRONE_TICK_INTERVAL_S * 2)
-            continue
-        await asyncio.sleep(DRONE_TICK_INTERVAL_S)
+    # Start drone simulation (loop lives in simulator.py)
+    asyncio.create_task(run_drone_simulation_loop(db, manager))
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

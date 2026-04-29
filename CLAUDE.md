@@ -46,8 +46,12 @@ The literal `/drones/feeds` route used to depend on decorator ordering (it had t
 
 ## Architecture
 
-### Backend — single-file FastAPI app (`backend/server.py`, ~1700 lines)
-Everything lives in one module: Pydantic models, routes, helpers, startup hooks. When adding endpoints, follow the existing layout — auth helpers → models → grouped `@api_router` sections (auth, weather, interventions, forecasts, geofences, tasks/comments, reports, public, drones, zones, sensors, alerts, AI, dashboard, patrols, species, notifications, seed). Avoid splitting into packages without a strong reason; the testing protocol (`test_result.md`) and AI agents assume this layout.
+### Backend — three modules in `backend/`
+- **`server.py`** (~1570 lines) — FastAPI app, all `@api_router` route handlers, auth helpers, `ConnectionManager`, startup/shutdown, CORS, motor `_id`-leak monkey-patch. New routes go here, in the existing grouping (auth → weather → interventions → forecasts → geofences → tasks/comments → reports → public → drones → zones → sensors → alerts → AI → dashboard → patrols → species → notifications → seed).
+- **`models.py`** (~390 lines) — every Pydantic request/response/entity model. Star-imported into server.py so handlers reference `Drone`, `Zone`, etc. by bare name. Add new models here.
+- **`simulator.py`** (~110 lines) — `tick_drone_simulation(db, manager)` and the supervised `run_drone_simulation_loop(db, manager)` plus the four `DRONE_*` constants. Db handle and ConnectionManager are passed in explicitly so this module has no compile-time dependency on server.py (no circular imports).
+
+The User document is intentionally **not** modeled — it's a raw Mongo doc keyed by `ObjectId`, with auth code converting on the way in/out. Don't try to "consolidate" it into models.py without rewriting `get_current_user`.
 
 - **Mongo**: `motor.motor_asyncio` async client. Most documents use UUID `id` strings except `users`, which is keyed by Mongo `ObjectId` (auth code converts via `ObjectId(payload["sub"])`). Don't change this without updating `get_current_user`.
 - **Auth**: JWT in `Authorization: Bearer …` (also accepts `access_token` cookie). Access tokens 60min, refresh tokens 7d. `require_role([...])` is the dependency for RBAC; `admin` always passes role checks (also enforced in the frontend `ProtectedRoute`). Currently only `/api/seed`, `/api/_internal/drone-tick`, and the `/ws/updates` WebSocket are auth-gated — most CRUD routes are still wide open. Hardening the rest is on the roadmap, not done.
