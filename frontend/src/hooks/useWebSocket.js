@@ -4,10 +4,8 @@ const WS_BASE = (process.env.REACT_APP_BACKEND_URL || "http://localhost:8001")
   .replace("https://", "wss://")
   .replace("http://", "ws://");
 
-// Connects to /ws/updates, pings every 25s, and reconnects on close.
-// Carefully guarded against React 18 StrictMode's double-mount: a `cancelled`
-// ref ensures the cleanup-from-first-mount can't trigger a reconnect on top
-// of the second-mount's connection.
+// Connects to /ws/updates using the httpOnly access_token cookie set by the
+// backend, pings every 25s, and reconnects on ordinary close events.
 export default function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState(null);
@@ -46,10 +44,11 @@ export default function useWebSocket() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setIsConnected(false);
         clearInterval(pingTimer.current);
         if (cancelled) return;
+        if (event.code === 4401) return;
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = setTimeout(connect, 3000);
       };

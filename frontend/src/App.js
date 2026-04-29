@@ -27,6 +27,7 @@ import TeamCollaboration from "./pages/TeamCollaboration";
 import Reports from "./pages/Reports";
 import PublicDashboard from "./pages/PublicDashboard";
 import NotificationSettings from "./pages/NotificationSettings";
+import MissionControl from "./pages/MissionControl";
 
 const routerFuture = {
   v7_startTransition: true,
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/patrols" element={<ProtectedPage title="Patrol Scheduling" roles={["admin", "field_operator"]}><PatrolScheduling /></ProtectedPage>} />
           <Route path="/patrol-reports" element={<ProtectedPage title="Patrol Reports"><PatrolReports /></ProtectedPage>} />
           <Route path="/map" element={<ProtectedPage title="Ecosystem Map"><EcosystemMap /></ProtectedPage>} />
+          <Route path="/mission-control" element={<ProtectedPage title="Mission Control" roles={["admin", "field_operator", "scientist"]}><MissionControl /></ProtectedPage>} />
           <Route path="/feeds" element={<ProtectedPage title="Camera Feeds" roles={["admin", "field_operator"]}><DroneCameraFeeds /></ProtectedPage>} />
           <Route path="/species" element={<ProtectedPage title="Species Identification" roles={["admin", "scientist"]}><SpeciesIdentification /></ProtectedPage>} />
           <Route path="/weather" element={<ProtectedPage title="Weather"><WeatherDashboard /></ProtectedPage>} />

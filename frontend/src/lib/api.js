@@ -88,6 +88,16 @@ export const droneAPI = {
   getFeeds: () => api.get("/drones/feeds"),
 };
 
+// ======================== MISSIONS ========================
+export const missionAPI = {
+  generate: (data) => api.post("/missions/generate", data),
+  getAll: () => api.get("/missions"),
+  getOne: (id) => api.get(`/missions/${id}`),
+  authorize: (id) => api.post(`/missions/${id}/authorize`),
+  abort: (id, reason = "Operator aborted mission from Mission Control.") => api.post(`/missions/${id}/abort`, { reason }),
+  complete: (id) => api.post(`/missions/${id}/complete`),
+};
+
 // ======================== ZONES ========================
 export const zoneAPI = {
   getAll: () => api.get("/zones"),
