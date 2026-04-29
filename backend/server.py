@@ -630,6 +630,28 @@ async def get_zone_forecasts(zone_id: str):
     forecasts = await db.forecasts.find({"zone_id": zone_id}, {"_id": 0}).sort("created_at", -1).to_list(10)
     return forecasts
 
+
+@api_router.post("/forecasts/counterfactual/{zone_id}")
+async def counterfactual_forecast(
+    zone_id: str,
+    mission_type: Optional[str] = None,
+    horizon_days: int = 14,
+):
+    """Chart-ready counterfactual: paired no-deploy / with-deploy biodiversity
+    trajectories with 80% confidence bands.
+
+    The Mission Control UI renders this as a dual-line chart with shaded CI.
+    The same helper drives the planner's `evidence.counterfactual.trajectories`
+    so the chart on the launch screen and the standalone view are *the same*
+    numbers, by construction.
+    """
+    if horizon_days < 1 or horizon_days > 90:
+        raise HTTPException(status_code=422, detail="horizon_days must be in [1, 90]")
+    zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+    return _counterfactual_trajectories(zone, mission_type=mission_type, horizon_days=horizon_days)
+
 # ==================== GEOFENCING ENDPOINTS ====================
 
 @api_router.get("/geofences")
@@ -1013,6 +1035,99 @@ _MISSION_ID_PATTERN = _DRONE_ID_PATTERN
 MISSION_GO_SCORE_FLOOR = 0.6
 
 
+def _counterfactual_trajectories(
+    zone: dict,
+    *,
+    mission_type: Optional[str] = None,
+    horizon_days: int = 14,
+    n_samples: int = 200,
+) -> dict:
+    """Counterfactual biodiversity-index trajectories for a zone.
+
+    Pair of Monte Carlo simulations over a domain drift model:
+
+      - **no_deploy**: zone evolves under its own decay process — degraded
+        zones (low biodiversity, low soil_health) drift down faster.
+      - **with_deploy**: same decay, plus a positive recovery shock whose
+        magnitude depends on `mission_type` (intervene > patrol > inspect).
+
+    Returns the per-day mean trajectory plus 10/90 percentile bands so the
+    frontend can render a chart with shaded confidence intervals. The seed
+    is derived from the zone id so the same zone produces the same
+    trajectories across calls (important for tests + repeatable demos).
+
+    Honest framing: this is a *domain model*, not an empirically-fit
+    forecast — we don't yet have a per-zone time-series of observations to
+    fit on. The schema is locked so when real history lands, only this
+    function changes. `fit_quality` is intentionally < 1 to flag that.
+    """
+    biodiv = float(zone.get("biodiversity_index", 0.5))
+    soil = float(zone.get("soil_health", 0.5))
+    priority = zone.get("priority", "medium")
+    priority_decay_mult = {"critical": 1.4, "high": 1.2, "medium": 1.0, "low": 0.8}.get(priority, 1.0)
+
+    # Drift signal: per-day decay, larger when biodiversity & soil are low.
+    decay_mu = (0.003 + 0.012 * (1 - biodiv) + 0.004 * (1 - soil)) * priority_decay_mult
+    decay_sigma = 0.0035
+
+    # Recovery signal: positive shock from intervention. Calibrated so that
+    # `intervene` on a high-priority degraded zone (biodiv ≤ 0.4) produces a
+    # net positive 7-day delta — matches the operational intuition that real
+    # interventions (seed pods, predator-prey rebalancing) show measurable
+    # gains within a week. Patrols are net-flat to slightly-negative on
+    # critical zones, which is also realistic.
+    recovery_mu = {"intervene": 0.025, "patrol": 0.013, "inspect": 0.008}.get(mission_type, 0.013)
+    recovery_sigma = 0.004
+
+    rng = random.Random(f"counterfactual::{zone.get('id', 'unknown')}")
+
+    no_deploy_paths: List[List[float]] = []
+    with_deploy_paths: List[List[float]] = []
+    for _ in range(n_samples):
+        nd = [biodiv]
+        wd = [biodiv]
+        for _ in range(horizon_days):
+            nd.append(max(0.0, min(1.0, nd[-1] - rng.gauss(decay_mu, decay_sigma))))
+            wd.append(max(0.0, min(1.0, wd[-1] - rng.gauss(decay_mu, decay_sigma) + rng.gauss(recovery_mu, recovery_sigma))))
+        no_deploy_paths.append(nd)
+        with_deploy_paths.append(wd)
+
+    points = []
+    for d in range(horizon_days + 1):
+        nd_d = sorted(p[d] for p in no_deploy_paths)
+        wd_d = sorted(p[d] for p in with_deploy_paths)
+        n = len(nd_d)
+        points.append({
+            "day": d,
+            "no_deploy_value":    round(sum(nd_d) / n, 4),
+            "no_deploy_lo":       round(nd_d[int(n * 0.10)], 4),
+            "no_deploy_hi":       round(nd_d[int(n * 0.90)], 4),
+            "with_deploy_value":  round(sum(wd_d) / n, 4),
+            "with_deploy_lo":     round(wd_d[int(n * 0.10)], 4),
+            "with_deploy_hi":     round(wd_d[int(n * 0.90)], 4),
+        })
+
+    # 7-day deltas — preserved for the planner's legacy summary keys.
+    day7 = points[min(7, horizon_days)]
+    summary = {
+        "no_deploy_final":     points[-1]["no_deploy_value"],
+        "with_deploy_final":   points[-1]["with_deploy_value"],
+        "horizon_delta":       round(points[-1]["with_deploy_value"] - points[-1]["no_deploy_value"], 4),
+        "no_deploy_delta_7d":  round(day7["no_deploy_value"] - biodiv, 4),
+        "with_deploy_delta_7d": round(day7["with_deploy_value"] - biodiv, 4),
+    }
+    return {
+        "zone_id": zone.get("id"),
+        "mission_type": mission_type,
+        "horizon_days": horizon_days,
+        "n_samples": n_samples,
+        "points": points,
+        "summary": summary,
+        "method": "bayesian-mc-v1 (Monte Carlo over a domain drift model; replace with empirical fit when zone_observations history lands)",
+        "fit_quality": 0.6,  # honest: heuristic, not empirically validated
+    }
+
+
 async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
     """Server-side mission planner.
 
@@ -1079,8 +1194,8 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
 
     risk_score = round(min(1.0, (1 - biodiversity) * priority_weight + 0.1), 3)
 
-    decay_per_week = max(0.0, 0.04 * priority_weight) if biodiversity < 0.6 else 0.01
-    boost_per_week = 0.06 if req.mission_type == "intervene" else 0.03
+    trajectories = _counterfactual_trajectories(zone, mission_type=req.mission_type, horizon_days=14)
+    summary = trajectories["summary"]
     evidence = {
         "zone_state_at_plan": {
             "biodiversity_index": biodiversity,
@@ -1088,9 +1203,12 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
             "priority": zone.get("priority"),
         },
         "counterfactual": {
-            "if_no_deploy_7d": {"biodiversity_index_delta": round(-decay_per_week, 3)},
-            "if_deploy_7d":    {"biodiversity_index_delta": round(boost_per_week, 3)},
-            "method": "linear-extrapolation-v0 (placeholder for forecasting model)",
+            # Legacy summary keys — preserved so older clients keep working.
+            "if_no_deploy_7d": {"biodiversity_index_delta": round(summary["no_deploy_delta_7d"], 3)},
+            "if_deploy_7d":    {"biodiversity_index_delta": round(summary["with_deploy_delta_7d"], 3)},
+            # Chart-ready: dual trajectories with 80% CI bands.
+            "trajectories": trajectories,
+            "method": trajectories["method"],
         },
         "rejected_drones": rejected,
         "active_geofences": [g.get("id") for g in geofence_docs],

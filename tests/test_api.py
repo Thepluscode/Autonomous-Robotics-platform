@@ -526,6 +526,74 @@ def test_planner_evidence_carries_counterfactual_and_rejection_reasons(
     api.delete(f"/zones/{zone_id}")
 
 
+def test_planner_evidence_carries_counterfactual_trajectories_with_ci(
+    api, auth_headers, unique_name
+):
+    """The chart that closes the Series A: planner evidence must surface a
+    full no-deploy vs with-deploy trajectory with confidence bands so the
+    Mission Control launch screen can render a real chart, not just a
+    one-line delta."""
+    zone = api.post("/zones", json={
+        "name": f"{unique_name}-traj",
+        "biodiversity_index": 0.3, "priority": "high",
+        "center_lat": 0.0, "center_lng": 0.0, "radius_km": 5.0,
+    })
+    zone_id = zone.json()["id"]
+    drone_id = api.post("/drones", json={"name": f"{unique_name}-traj-d", "status": "idle", "battery": 90}).json()["id"]
+
+    plan = api.post("/missions/generate", headers=auth_headers,
+                    json={"zone_id": zone_id, "mission_type": "intervene", "max_drones": 1})
+    assert plan.status_code == 200, plan.text
+    cf = plan.json()["evidence"]["counterfactual"]
+    traj = cf["trajectories"]
+    assert traj["horizon_days"] == 14
+    assert len(traj["points"]) == 15  # day 0 through day 14 inclusive
+    # Schema sanity on the first point.
+    p0 = traj["points"][0]
+    for key in ("day", "no_deploy_value", "no_deploy_lo", "no_deploy_hi",
+                "with_deploy_value", "with_deploy_lo", "with_deploy_hi"):
+        assert key in p0, f"missing point key: {key}"
+    # CI bands must surround the mean.
+    p_mid = traj["points"][7]
+    assert p_mid["no_deploy_lo"] <= p_mid["no_deploy_value"] <= p_mid["no_deploy_hi"]
+    assert p_mid["with_deploy_lo"] <= p_mid["with_deploy_value"] <= p_mid["with_deploy_hi"]
+    # Intervention beats no-action by the horizon end.
+    assert traj["summary"]["with_deploy_final"] > traj["summary"]["no_deploy_final"]
+    # `fit_quality` is honest about the placeholder model.
+    assert 0 <= traj["fit_quality"] <= 1
+
+    api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_counterfactual_endpoint_returns_chart_data(api, unique_name):
+    zone = api.post("/zones", json={
+        "name": f"{unique_name}-cfep",
+        "biodiversity_index": 0.4, "priority": "critical",
+        "center_lat": 0.0, "center_lng": 0.0, "radius_km": 5.0,
+    })
+    zone_id = zone.json()["id"]
+
+    r = api.post(f"/forecasts/counterfactual/{zone_id}?mission_type=intervene&horizon_days=21")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["horizon_days"] == 21
+    assert len(body["points"]) == 22
+    assert body["zone_id"] == zone_id
+    assert body["mission_type"] == "intervene"
+    # Determinism: same zone + same params produce the same numbers.
+    r2 = api.post(f"/forecasts/counterfactual/{zone_id}?mission_type=intervene&horizon_days=21")
+    assert r2.json()["points"] == body["points"]
+
+    # Bounds enforcement.
+    bad = api.post(f"/forecasts/counterfactual/{zone_id}?horizon_days=200")
+    assert bad.status_code == 422
+    missing = api.post(f"/forecasts/counterfactual/00000000-0000-4000-8000-000000000000")
+    assert missing.status_code == 404
+
+    api.delete(f"/zones/{zone_id}")
+
+
 def test_audit_trail_grows_monotonically_across_state_transitions(
     api, auth_headers, unique_name
 ):
