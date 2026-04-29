@@ -1,0 +1,1 @@
+web: npx --yes serve@latest -s build -l $PORT
