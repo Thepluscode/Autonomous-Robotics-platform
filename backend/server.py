@@ -1776,6 +1776,12 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
         if auth_header.lower().startswith("bearer "):
             token = auth_header[7:]
     if not token:
+        # Browser WebSocket clients can't set headers, but cookies on the
+        # handshake do come through — falls back to the access_token cookie
+        # set by /api/auth/login so the React app doesn't need to surface
+        # the raw JWT to JS just to open a socket.
+        token = websocket.cookies.get("access_token")
+    if not token:
         await websocket.close(code=4401)
         return
     try:
@@ -1806,12 +1812,19 @@ async def root():
 # Include router
 app.include_router(api_router)
 
-# CORS
-frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+# CORS — credentials=True requires an explicit origin allowlist (the wildcard
+# `"*"` is incompatible with `Access-Control-Allow-Credentials: true`). Cookies
+# are httpOnly and the frontend uses `withCredentials` to send them, so the
+# allowlist must name every origin the frontend may run on.
+_frontend_origins = [
+    o.strip()
+    for o in os.environ.get("FRONTEND_URL", "http://localhost:3000").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=False,
-    allow_origins=["*"],
+    allow_credentials=True,
+    allow_origins=_frontend_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

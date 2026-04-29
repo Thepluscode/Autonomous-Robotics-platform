@@ -2,52 +2,28 @@ import axios from "axios";
 
 const API_BASE = process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
 
+// `withCredentials: true` makes axios send the httpOnly access_token /
+// refresh_token cookies on every request. Tokens never touch JS-readable
+// storage, which closes the XSS-grabs-token attack surface that came with
+// the previous localStorage-based design.
 const api = axios.create({
   baseURL: `${API_BASE}/api`,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
 });
-
-// ==================== TOKEN MANAGEMENT ====================
-const TOKEN_KEY = "eco_access_token";
-const REFRESH_KEY = "eco_refresh_token";
-
-export function getAccessToken() {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function getRefreshToken() {
-  return localStorage.getItem(REFRESH_KEY);
-}
-
-export function setTokens(accessToken, refreshToken) {
-  if (accessToken) localStorage.setItem(TOKEN_KEY, accessToken);
-  if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken);
-}
-
-export function clearTokens() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-}
 
 // ==================== INTERCEPTORS ====================
 
-// Attach Bearer token to every request
-api.interceptors.request.use((config) => {
-  const token = getAccessToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-// Intercept 401s and attempt token refresh
+// 401 handler — relies on the refresh_token cookie. The backend's
+// /api/auth/refresh reads it directly, sets a new access_token cookie, and
+// the retry of the original request picks it up. No JS-side token plumbing.
 let isRefreshing = false;
 let failedQueue = [];
 
-const processQueue = (error, token = null) => {
+const processQueue = (error) => {
   failedQueue.forEach((prom) => {
     if (error) prom.reject(error);
-    else prom.resolve(token);
+    else prom.resolve();
   });
   failedQueue = [];
 };
@@ -56,14 +32,13 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const originalRequest = error.config;
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Don't try to refresh on the refresh endpoint itself (would loop).
+    const isRefreshCall = originalRequest?.url?.endsWith("/auth/refresh");
+    if (error.response?.status === 401 && !originalRequest._retry && !isRefreshCall) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({
-            resolve: (token) => {
-              originalRequest.headers.Authorization = `Bearer ${token}`;
-              resolve(api(originalRequest));
-            },
+            resolve: () => resolve(api(originalRequest)),
             reject,
           });
         });
@@ -71,26 +46,15 @@ api.interceptors.response.use(
       originalRequest._retry = true;
       isRefreshing = true;
 
-      const refreshToken = getRefreshToken();
-      if (!refreshToken) {
-        clearTokens();
-        window.location.href = "/login";
-        return Promise.reject(error);
-      }
-
       try {
-        const res = await axios.post(`${API_BASE}/api/auth/refresh`, null, {
-          headers: { "X-Refresh-Token": refreshToken },
-        });
-        const newToken = res.data.access_token;
-        setTokens(newToken, null);
-        processQueue(null, newToken);
-        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        await axios.post(`${API_BASE}/api/auth/refresh`, null, { withCredentials: true });
+        processQueue(null);
         return api(originalRequest);
       } catch (err) {
         processQueue(err);
-        clearTokens();
-        window.location.href = "/login";
+        if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+          window.location.href = "/login";
+        }
         return Promise.reject(err);
       } finally {
         isRefreshing = false;
@@ -104,17 +68,9 @@ api.interceptors.response.use(
 export const authAPI = {
   login: (email, password) => api.post("/auth/login", { email, password }),
   register: (data) => api.post("/auth/register", data),
-  logout: () => {
-    clearTokens();
-    return api.post("/auth/logout");
-  },
+  logout: () => api.post("/auth/logout"),
   me: () => api.get("/auth/me"),
-  refresh: () => {
-    const refreshToken = getRefreshToken();
-    return axios.post(`${API_BASE}/api/auth/refresh`, null, {
-      headers: { "X-Refresh-Token": refreshToken },
-    });
-  },
+  refresh: () => axios.post(`${API_BASE}/api/auth/refresh`, null, { withCredentials: true }),
   forgotPassword: (email) => api.post("/auth/forgot-password", { email }),
   resetPassword: (token, newPassword) => api.post("/auth/reset-password", { token, new_password: newPassword }),
   getUsers: () => api.get("/auth/users"),

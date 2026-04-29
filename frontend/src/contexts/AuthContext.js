@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { authAPI, setTokens, clearTokens, getAccessToken } from "../lib/api";
+import { authAPI } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -8,18 +8,11 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const fetchUser = useCallback(async () => {
-    // Only try to fetch user if we have a token
-    if (!getAccessToken()) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
     try {
       const res = await authAPI.me();
       setUser(res.data);
     } catch {
       setUser(null);
-      clearTokens();
     } finally {
       setLoading(false);
     }
@@ -32,10 +25,6 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     const res = await authAPI.login(email, password);
     const data = res.data;
-    // Store tokens from response body
-    if (data.access_token) {
-      setTokens(data.access_token, data.refresh_token);
-    }
     setUser({ id: data.id, email: data.email, name: data.name, role: data.role });
     return data;
   };
@@ -43,10 +32,6 @@ export function AuthProvider({ children }) {
   const register = async (data) => {
     const res = await authAPI.register(data);
     const resData = res.data;
-    // Store tokens from response body
-    if (resData.access_token) {
-      setTokens(resData.access_token, resData.refresh_token);
-    }
     setUser({ id: resData.id, email: resData.email, name: resData.name, role: resData.role });
     return resData;
   };
@@ -57,7 +42,6 @@ export function AuthProvider({ children }) {
     } catch {
       // ignore
     }
-    clearTokens();
     setUser(null);
   };
 
