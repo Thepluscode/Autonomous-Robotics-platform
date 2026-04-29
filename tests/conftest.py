@@ -23,18 +23,33 @@ def base_url() -> str:
     return _base_url()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def _require_live_backend(base_url: str) -> None:
-    """Skip the whole suite if the backend isn't responding."""
+    """Skip the test if the backend isn't responding.
+
+    Pulled in via the `api` fixture so HTTP-driven tests skip when the dev
+    server is down, but pure unit tests (which never request `api`) continue
+    to run.
+
+    Verifies the response shape too — port 8001 is a popular dev port and
+    a different FastAPI app answering on it would return 200 for `/api/`
+    but with the wrong payload, leading to confusing test failures.
+    """
     try:
         r = requests.get(f"{base_url}/api/", timeout=3)
         r.raise_for_status()
+        payload = r.json()
+        if "Autonomous Ecosystem Architect" not in payload.get("message", ""):
+            raise RuntimeError(
+                f"server at {base_url} responded but is not this project's "
+                f"backend (got: {payload!r})"
+            )
     except Exception as exc:
         pytest.skip(f"Backend not reachable at {base_url} ({exc!s})", allow_module_level=True)
 
 
 @pytest.fixture(scope="session")
-def api(base_url: str) -> "ApiClient":
+def api(base_url: str, _require_live_backend) -> "ApiClient":
     return ApiClient(base_url)
 
 

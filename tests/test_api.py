@@ -75,7 +75,7 @@ def test_register_admin_role_is_downgraded(api, unique_name):
     assert r.json()["role"] == "viewer"
 
 
-def test_me_requires_auth(base_url):
+def test_me_requires_auth(base_url, _require_live_backend):
     """Use a fresh client — login on the shared session sets a cookie that would
     silently authenticate this call and hide the 401 path."""
     import requests
