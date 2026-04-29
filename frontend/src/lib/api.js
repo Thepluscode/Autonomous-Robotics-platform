@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
+export const API_BASE = (process.env.REACT_APP_BACKEND_URL || "http://localhost:8001").replace(/\/+$/, "");
 
 // `withCredentials: true` makes axios send the httpOnly access_token /
 // refresh_token cookies on every request. Tokens never touch JS-readable
@@ -34,7 +34,8 @@ api.interceptors.response.use(
     const originalRequest = error.config;
     // Don't try to refresh on the refresh endpoint itself (would loop).
     const isRefreshCall = originalRequest?.url?.endsWith("/auth/refresh");
-    if (error.response?.status === 401 && !originalRequest._retry && !isRefreshCall) {
+    const skipAuthRefresh = originalRequest?.skipAuthRefresh;
+    if (error.response?.status === 401 && !originalRequest._retry && !isRefreshCall && !skipAuthRefresh) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({
@@ -69,7 +70,7 @@ export const authAPI = {
   login: (email, password) => api.post("/auth/login", { email, password }),
   register: (data) => api.post("/auth/register", data),
   logout: () => api.post("/auth/logout"),
-  me: () => api.get("/auth/me"),
+  me: () => api.get("/auth/me", { skipAuthRefresh: true }),
   refresh: () => axios.post(`${API_BASE}/api/auth/refresh`, null, { withCredentials: true }),
   forgotPassword: (email) => api.post("/auth/forgot-password", { email }),
   resetPassword: (token, newPassword) => api.post("/auth/reset-password", { token, new_password: newPassword }),

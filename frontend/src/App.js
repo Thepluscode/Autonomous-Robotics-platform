@@ -65,6 +65,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/public" element={<PublicDashboard />} />
+          <Route path="/gaia-prime" element={<PublicDashboard />} />
 
           {/* Protected routes */}
           <Route path="/" element={<ProtectedPage title="Dashboard"><Dashboard /></ProtectedPage>} />

@@ -1,11 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { authAPI } from "../lib/api";
 
 const AuthContext = createContext(null);
+const PUBLIC_PATHS = new Set(["/login", "/register", "/public", "/gaia-prime"]);
+
+function isPublicPath(pathname) {
+  return PUBLIC_PATHS.has(pathname);
+}
 
 export function AuthProvider({ children }) {
+  const location = useLocation();
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return !isPublicPath(window.location.pathname);
+  });
 
   const fetchUser = useCallback(async () => {
     try {
@@ -19,8 +29,14 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    if (isPublicPath(location.pathname)) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     fetchUser();
-  }, [fetchUser]);
+  }, [fetchUser, location.pathname]);
 
   const login = async (email, password) => {
     const res = await authAPI.login(email, password);

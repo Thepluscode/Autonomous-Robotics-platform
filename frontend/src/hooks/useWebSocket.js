@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
-const WS_BASE = (process.env.REACT_APP_BACKEND_URL || "http://localhost:8001")
-  .replace("https://", "wss://")
-  .replace("http://", "ws://");
+const WS_BASE = (process.env.REACT_APP_WS_URL ||
+  (process.env.REACT_APP_BACKEND_URL || "http://localhost:8001")
+    .replace("https://", "wss://")
+    .replace("http://", "ws://")
+).replace(/\/+$/, "");
 
 // Connects to /ws/updates using the httpOnly access_token cookie set by the
 // backend, pings every 25s, and reconnects on ordinary close events.

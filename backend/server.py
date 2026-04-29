@@ -74,6 +74,9 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'fallback-secret-key')
 JWT_ALGORITHM = "HS256"
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@ecosystem.com')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
+_frontend_url_env = os.environ.get("FRONTEND_URL", "")
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in {"1", "true", "yes"} or "https://" in _frontend_url_env
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none" if COOKIE_SECURE else "lax").lower()
 
 app = FastAPI(title="Autonomous Ecosystem Architect API")
 api_router = APIRouter(prefix="/api")
@@ -105,6 +108,36 @@ def create_refresh_token(user_id: str) -> str:
         "type": "refresh"
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def set_access_cookie(response: Response, access_token: str):
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=3600,
+        path="/",
+    )
+
+def set_refresh_cookie(response: Response, refresh_token: str):
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=604800,
+        path="/",
+    )
+
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
+    set_access_cookie(response, access_token)
+    set_refresh_cookie(response, refresh_token)
+
+def clear_auth_cookies(response: Response):
+    response.delete_cookie("access_token", path="/", secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE)
+    response.delete_cookie("refresh_token", path="/", secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE)
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -232,8 +265,7 @@ async def register(user_data: UserRegister, response: Response):
     access_token = create_access_token(user_id, email, user_data.role)
     refresh_token = create_refresh_token(user_id)
     
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    set_auth_cookies(response, access_token, refresh_token)
     
     return {"id": user_id, "email": email, "name": user_data.name, "role": user_data.role, "access_token": access_token, "refresh_token": refresh_token}
 
@@ -267,8 +299,7 @@ async def login(credentials: UserLogin, request: Request, response: Response):
     access_token = create_access_token(user_id, email, user["role"])
     refresh_token = create_refresh_token(user_id)
     
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    set_auth_cookies(response, access_token, refresh_token)
     
     # Log audit
     await db.audit_logs.insert_one({
@@ -282,8 +313,7 @@ async def login(credentials: UserLogin, request: Request, response: Response):
 
 @api_router.post("/auth/logout")
 async def logout(response: Response):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
 
 @api_router.get("/auth/me")
@@ -315,7 +345,7 @@ async def refresh_token(request: Request, response: Response):
         
         user_id = str(user["_id"])
         access_token = create_access_token(user_id, user["email"], user["role"])
-        response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=3600, path="/")
+        set_access_cookie(response, access_token)
         
         return {"message": "Token refreshed", "access_token": access_token}
     except jwt.ExpiredSignatureError:
@@ -2043,11 +2073,15 @@ app.include_router(api_router)
 # `"*"` is incompatible with `Access-Control-Allow-Credentials: true`). Cookies
 # are httpOnly and the frontend uses `withCredentials` to send them, so the
 # allowlist must name every origin the frontend may run on.
-_frontend_origins = [
-    o.strip()
-    for o in os.environ.get("FRONTEND_URL", "http://localhost:3000").split(",")
-    if o.strip()
-]
+_frontend_origins = []
+for _origin_source in (
+    os.environ.get("FRONTEND_URL", "http://localhost:3000"),
+    os.environ.get("CORS_ORIGINS", ""),
+):
+    for _origin in _origin_source.split(","):
+        _origin = _origin.strip()
+        if _origin and _origin != "*" and _origin not in _frontend_origins:
+            _frontend_origins.append(_origin)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
