@@ -1,0 +1,127 @@
+{
+  "project_name": "Autonomous Ecosystem Architect",
+  "theme": "Light",
+  "archetype": "1 (Organic & Earthy)",
+  "vibe": "Master gardener command center, high-tech organic fusion, precise, calm, reliable",
+  "colors": {
+    "css_variables": {
+      "--background": "80 20% 95%",
+      "--foreground": "140 32% 13%",
+      "--card": "0 0% 100%",
+      "--card-foreground": "140 32% 13%",
+      "--popover": "0 0% 100%",
+      "--popover-foreground": "140 32% 13%",
+      "--primary": "144 33% 26%",
+      "--primary-foreground": "0 0% 100%",
+      "--secondary": "73 22% 90%",
+      "--secondary-foreground": "140 32% 13%",
+      "--muted": "77 16% 89%",
+      "--muted-foreground": "133 10% 43%",
+      "--accent": "13 67% 60%",
+      "--accent-foreground": "0 0% 100%",
+      "--destructive": "0 54% 54%",
+      "--destructive-foreground": "0 0% 100%",
+      "--border": "76 11% 82%",
+      "--input": "76 11% 82%",
+      "--ring": "144 33% 26%",
+      "--chart-1": "144 33% 26%",
+      "--chart-2": "13 67% 60%",
+      "--chart-3": "140 30% 45%",
+      "--chart-4": "38 72% 62%",
+      "--chart-5": "80 15% 55%",
+      "--radius": "0.3rem"
+    },
+    "description": "Base is warm sand with deep forest green foreground. Primary is moss green. Accent is a striking terracotta for alerts and ASI triggers."
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Outfit",
+      "body": "DM Sans",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy_rules": [
+      "H1 (Hero/Main Heading): text-4xl sm:text-5xl lg:text-6xl tracking-tighter",
+      "H2 (Section Heading): text-2xl sm:text-3xl lg:text-4xl tracking-tight",
+      "H3 (Subsection Heading): text-xl sm:text-2xl",
+      "H4 (Card/Widget Heading): text-lg sm:text-xl",
+      "Body: text-base leading-relaxed",
+      "Labels/Overlines: text-xs uppercase tracking-[0.2em] font-semibold"
+    ]
+  },
+  "layout_and_spacing": {
+    "grid_mode": "MODE B: THE 'CONTROL ROOM' GRID",
+    "base_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4",
+    "gap": "gap-4 md:gap-6",
+    "container_padding": "p-6 md:p-8 lg:p-12",
+    "rules": [
+      "Mobile-first responsive grids always. Start with grid-cols-1.",
+      "Grid items MUST be direct children of the grid container.",
+      "Utilize h-full to ensure widgets stretch to match neighbors.",
+      "Generous Spacing Philosophy: Use 2-3x more spacing (p-6, p-8) to give data room to breathe."
+    ]
+  },
+  "surfaces": {
+    "strategy": "Grid Borders (The 'Technical' Look)",
+    "rules": [
+      "Cards use a 1px solid border (border-border).",
+      "No heavy shadows by default. Use shadow-sm ONLY on hover or for active floating elements.",
+      "Expose the grid skeleton. The dashboard should feel like a precise instrument."
+    ]
+  },
+  "components": {
+    "library": "Shadcn UI",
+    "customizations": {
+      "cards": "Remove large border radii. Use rounded-sm for a tighter, 'Control Room' aesthetic.",
+      "buttons": "Square edges or minimal rounding. Always explicitly set hover text and bg colors.",
+      "charts": "Integrate ambient data visualization. Avoid generic defaults; use the earth-toned chart variables.",
+      "tables": "Dense, clean layouts without alternating row colors. Use a 1px bottom border to separate rows."
+    }
+  },
+  "motion_and_interaction": {
+    "rules": [
+      "Transitions must be 0.2s ease. Explicitly target transform and opacity.",
+      "Avoid bouncy animations. This is a planetary management tool; it should feel calm and reliable.",
+      "Ensure all interactive elements have explicit hover and focus states (e.g. focus:ring-2)."
+    ]
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1773449041570-2814d5d5409f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwyfHxsdXNoJTIwZ3JlZW4lMjBmb3Jlc3QlMjBhZXJpYWx8ZW58MHx8fHwxNzc0NzcyOTM5fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Dense green pine forest aerial view",
+        "category": "Dashboard Header / Zone Management Hero",
+        "usage": "Use as a muted background with a heavy white/sand overlay (e.g., bg-white/80) to give texture to the header."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1629988804949-870218cc412f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHwyfHxkcm9uZSUyMGhvdmVyaW5nfGVufDB8fHx8MTc3NDc3Mjk0MHww&ixlib=rb-4.1.0&q=85",
+        "description": "White drone flying over landscape",
+        "category": "Swarm Details / Drone Fleet Context",
+        "usage": "Thumbnail image or sidebar context for the swarm deployment controls."
+      },
+      {
+        "url": "https://static.prod-images.emergentagent.com/jobs/236dfdb6-f0c4-43d6-b228-1cb4f698a181/images/777b525093f33e87ddac6cb1e5a1f1f846deccfd339ed5e76b0b0f154597ddf7.png",
+        "description": "High-tech abstract topographical map of a lush forest",
+        "category": "Interactive Map Placeholder / Background",
+        "usage": "Primary visual base for the interactive map section."
+      }
+    ],
+    "icons": {
+      "library": "lucide-react",
+      "instruction": "Use stroke-width 1.5 to match the technical, precise dashboard aesthetic."
+    }
+  },
+  "accessibility": {
+    "rules": [
+      "All interactive elements MUST include a data-testid attribute in kebab-case (e.g., data-testid='swarm-deploy-btn').",
+      "Ensure contrast ratios meet APCA standards. Deep green text on warm sand backgrounds is required.",
+      "Respect prefers-reduced-motion for all dashboard updates."
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Strictly apply the HSL variables provided to the globals.css to achieve the Earthy Light Theme.",
+    "Implement the 'Control Room' grid layout. Make full use of the screen real-estate but maintain clear boundaries with 1px borders.",
+    "Do NOT use external placeholder services for images. ONLY use the provided URLs in the media section.",
+    "Ensure the dashboard feels like an ambient, integrated command center rather than isolated chaotic widgets.",
+    "Always include `data-testid` on key UI components."
+  ]
+}

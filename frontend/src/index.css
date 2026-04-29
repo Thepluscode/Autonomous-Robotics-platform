@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 80 20% 95%;
+    --foreground: 140 32% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 140 32% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 140 32% 13%;
+    --primary: 144 33% 26%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 73 22% 90%;
+    --secondary-foreground: 140 32% 13%;
+    --muted: 77 16% 89%;
+    --muted-foreground: 133 10% 43%;
+    --accent: 13 67% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 54% 54%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 76 11% 82%;
+    --input: 76 11% 82%;
+    --ring: 144 33% 26%;
+    --chart-1: 144 33% 26%;
+    --chart-2: 13 67% 60%;
+    --chart-3: 140 30% 45%;
+    --chart-4: 38 72% 62%;
+    --chart-5: 80 15% 55%;
+    --radius: 0.3rem;
+    --sidebar-width: 260px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+}
+
+/* Leaflet overrides for earthy theme */
+.leaflet-container {
+  font-family: "DM Sans", sans-serif;
+  border-radius: var(--radius);
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: var(--radius);
+  font-family: "DM Sans", sans-serif;
+}
+
+/* Recharts overrides */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+.recharts-default-tooltip {
+  border-radius: var(--radius) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  background: hsl(var(--card)) !important;
+  font-family: "DM Sans", sans-serif !important;
+}
