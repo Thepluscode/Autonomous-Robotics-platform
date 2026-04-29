@@ -286,6 +286,278 @@ def test_patrols_generate_and_complete(api, seeded, unique_name):
     api.delete(f"/patrols/{patrol_id}")
 
 
+# --------------------------- Missions -----------------------------------------
+
+def _create_mission_ready_fixture(api, unique_name, auth_headers, suffix=""):
+    zone = api.post(
+        "/zones",
+        json={
+            "name": f"{unique_name}-mission-zone{suffix}",
+            "zone_type": "forest",
+            "priority": "critical",
+            "center_lat": 1.0,
+            "center_lng": 2.0,
+            "radius_km": 8,
+            "biodiversity_index": 0.35,
+            "soil_health": 0.4,
+            "predator_prey_balance": 0.5,
+            "vegetation_coverage": 0.45,
+        },
+    )
+    assert zone.status_code == 200, zone.text
+    zone_id = zone.json()["id"]
+
+    created_drones = []
+    for index in range(2):
+        drone = api.post(
+            "/drones",
+            json={
+                "name": f"{unique_name}-mission-drone-{index}{suffix}",
+                "status": "idle",
+                "battery": 98 - index,
+                "latitude": 1.0 + index * 0.01,
+                "longitude": 2.0 + index * 0.01,
+            },
+        )
+        assert drone.status_code == 200, drone.text
+        created_drones.append(drone.json())
+
+    mission = api.post(
+        "/missions/generate",
+        headers=auth_headers,
+        json={
+            "zone_id": zone_id,
+            "mission_type": "patrol",
+            "max_drones": 2,
+            "notes": "pytest lifecycle mission",
+        },
+    )
+    assert mission.status_code == 200, mission.text
+    body = mission.json()
+    assert body["status"] == "ready"
+    assert body["drone_ids"]
+    assert body["go_score"] >= 0.6
+    return body, zone_id, [d["id"] for d in created_drones]
+
+
+def test_mission_lifecycle_authorize_and_complete(api, auth_headers, unique_name):
+    mission, zone_id, drone_ids = _create_mission_ready_fixture(api, unique_name, auth_headers)
+    mission_id = mission["id"]
+
+    listed = api.get("/missions", headers=auth_headers)
+    assert listed.status_code == 200
+    assert any(item["id"] == mission_id for item in listed.json())
+
+    fetched = api.get(f"/missions/{mission_id}", headers=auth_headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["id"] == mission_id
+
+    premature_complete = api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
+    assert premature_complete.status_code == 400
+
+    authorized = api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
+    assert authorized.status_code == 200, authorized.text
+    active = authorized.json()
+    assert active["status"] == "active"
+    assert active["launch_result"]["deployed_count"] > 0
+    assert any(event["action"] == "authorized" for event in active["audit_trail"])
+
+    double_authorize = api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
+    assert double_authorize.status_code == 400
+
+    completed = api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
+    assert completed.status_code == 200, completed.text
+    done = completed.json()
+    assert done["status"] == "completed"
+    assert done["post_mission_summary"]
+    report = done["post_mission_report"]
+    assert report["mission_id"] == mission_id
+    assert report["zone_id"] == zone_id
+    assert report["status"] == "completed"
+    assert report["drones"], "completed mission report should include drone evidence"
+    assert "restoration_impact" in report
+    assert "biodiversity_delta_7d_estimate" in report["restoration_impact"]
+    assert "audit_trail" in report and report["audit_trail"]
+    assert "recommendations" in report and report["recommendations"]
+    assert any(event["action"] == "completed" for event in done["audit_trail"])
+
+    abort_completed = api.post(
+        f"/missions/{mission_id}/abort",
+        headers=auth_headers,
+        json={"reason": "pytest should not abort completed missions"},
+    )
+    assert abort_completed.status_code == 400
+
+    for drone_id in drone_ids:
+        api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_mission_abort_requires_active_and_reason(api, auth_headers, unique_name):
+    mission, zone_id, drone_ids = _create_mission_ready_fixture(api, unique_name, auth_headers, suffix="-abort")
+    mission_id = mission["id"]
+
+    abort_ready = api.post(
+        f"/missions/{mission_id}/abort",
+        headers=auth_headers,
+        json={"reason": "pytest abort before active"},
+    )
+    assert abort_ready.status_code == 400
+
+    missing_reason = api.post(f"/missions/{mission_id}/abort", headers=auth_headers)
+    assert missing_reason.status_code == 422
+
+    authorized = api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
+    assert authorized.status_code == 200, authorized.text
+
+    aborted = api.post(
+        f"/missions/{mission_id}/abort",
+        headers=auth_headers,
+        json={"reason": "pytest active abort"},
+    )
+    assert aborted.status_code == 200, aborted.text
+    body = aborted.json()
+    assert body["status"] == "aborted"
+    assert any(event["action"] == "aborted" and event["detail"] == "pytest active abort" for event in body["audit_trail"])
+
+    complete_aborted = api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
+    assert complete_aborted.status_code == 400
+
+    for drone_id in drone_ids:
+        api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_mission_draft_cannot_authorize(api, auth_headers, unique_name):
+    zone = api.post("/zones", json={"name": f"{unique_name}-draft-zone"})
+    assert zone.status_code == 200, zone.text
+    zone_id = zone.json()["id"]
+
+    mission = api.post(
+        "/missions/generate",
+        headers=auth_headers,
+        json={"zone_id": zone_id, "mission_type": "inspect", "max_drones": 0},
+    )
+    assert mission.status_code == 200, mission.text
+    body = mission.json()
+    assert body["status"] == "draft"
+
+    authorized = api.post(f"/missions/{body['id']}/authorize", headers=auth_headers)
+    assert authorized.status_code == 400
+
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_missions_route_rejects_non_uuid_path(api, auth_headers):
+    r = api.get("/missions/not-a-uuid", headers=auth_headers)
+    assert r.status_code == 422
+
+
+# --------------------------- Mission planner contract ------------------------
+# These lock behaviors the moonshot demo depends on: planner picks the right
+# zone unprompted, surfaces a counterfactual, filters drones by readiness,
+# and writes a monotonically-growing audit trail. If any of these regress,
+# the "AI Mission Control Mode" pitch falls apart.
+
+def test_planner_auto_picks_lowest_biodiversity_zone_when_zone_id_omitted(
+    api, auth_headers, seeded, unique_name
+):
+    # Plant a clearly-worst zone so we can assert the planner finds it.
+    target = api.post("/zones", json={
+        "name": f"{unique_name}-worst",
+        "biodiversity_index": 0.05,
+        "priority": "critical",
+        "center_lat": 0.0, "center_lng": 0.0, "radius_km": 5.0,
+    })
+    assert target.status_code == 200, target.text
+    target_id = target.json()["id"]
+
+    drone = api.post("/drones", json={
+        "name": f"{unique_name}-worst-drone",
+        "status": "idle", "battery": 95,
+    })
+    assert drone.status_code == 200
+    drone_id = drone.json()["id"]
+
+    plan = api.post("/missions/generate", headers=auth_headers,
+                    json={"mission_type": "patrol", "max_drones": 1})
+    assert plan.status_code == 200, plan.text
+    body = plan.json()
+    assert body["zone_id"] == target_id, "planner should pick the lowest-biodiversity zone"
+
+    api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{target_id}")
+
+
+def test_planner_evidence_carries_counterfactual_and_rejection_reasons(
+    api, auth_headers, unique_name
+):
+    zone = api.post("/zones", json={
+        "name": f"{unique_name}-evidence",
+        "biodiversity_index": 0.3, "priority": "high",
+        "center_lat": 0.0, "center_lng": 0.0, "radius_km": 5.0,
+    })
+    zone_id = zone.json()["id"]
+
+    # Mix of rejectable and acceptable drones — rejections must surface.
+    drones = []
+    for i, (status, battery) in enumerate([("idle", 95), ("idle", 30), ("patrolling", 90)]):
+        d = api.post("/drones", json={
+            "name": f"{unique_name}-ev-{i}", "status": status, "battery": battery,
+        })
+        drones.append(d.json()["id"])
+
+    plan = api.post("/missions/generate", headers=auth_headers,
+                    json={"zone_id": zone_id, "mission_type": "intervene", "max_drones": 5})
+    assert plan.status_code == 200, plan.text
+    body = plan.json()
+
+    cf = body["evidence"]["counterfactual"]
+    assert "if_no_deploy_7d" in cf and "if_deploy_7d" in cf
+    assert cf["if_no_deploy_7d"]["biodiversity_index_delta"] <= 0, "no-deploy should be flat or worse"
+    assert cf["if_deploy_7d"]["biodiversity_index_delta"] > 0, "deploy should improve"
+
+    rejected = {r["id"]: r["reason"] for r in body["evidence"]["rejected_drones"]}
+    assert any("battery=" in r for r in rejected.values()), "low-battery drone must be rejected with reason"
+    assert any("status=patrolling" in r for r in rejected.values()), "non-idle drone must be rejected with reason"
+
+    for d in drones:
+        api.delete(f"/drones/{d}")
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_audit_trail_grows_monotonically_across_state_transitions(
+    api, auth_headers, unique_name
+):
+    mission, zone_id, drone_ids = _create_mission_ready_fixture(
+        api, unique_name, auth_headers, suffix="-audit"
+    )
+    mission_id = mission["id"]
+
+    after_generate = api.get(f"/missions/{mission_id}", headers=auth_headers).json()
+    n_after_generate = len(after_generate["audit_trail"])
+
+    api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
+    after_authorize = api.get(f"/missions/{mission_id}", headers=auth_headers).json()
+    n_after_authorize = len(after_authorize["audit_trail"])
+
+    api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
+    after_complete = api.get(f"/missions/{mission_id}", headers=auth_headers).json()
+    n_after_complete = len(after_complete["audit_trail"])
+
+    assert n_after_generate >= 1
+    assert n_after_authorize > n_after_generate, "authorize must append entries"
+    assert n_after_complete > n_after_authorize, "complete must append an entry"
+
+    actions = [e["action"] for e in after_complete["audit_trail"]]
+    assert actions[0] == "generated"
+    assert "authorized" in actions and "launched" in actions and "completed" in actions
+
+    for d in drone_ids:
+        api.delete(f"/drones/{d}")
+    api.delete(f"/zones/{zone_id}")
+
+
 # --------------------------- Public dashboard ---------------------------------
 
 def test_public_dashboard_no_auth(api, seeded):

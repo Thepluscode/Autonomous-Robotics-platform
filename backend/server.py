@@ -975,6 +975,423 @@ async def deploy_drones(request: DeployMissionRequest):
     
     return {"message": f"Deployed {updated_count} drones", "deployed_count": updated_count}
 
+# Mission endpoints
+def _mission_audit_event(action: str, user: dict, detail: str = "") -> dict:
+    return {
+        "action": action,
+        "detail": detail,
+        "user_id": user.get("id"),
+        "user_name": user.get("name") or user.get("email"),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+def _deserialize_mission(mission: dict) -> dict:
+    deserialize_datetime(mission, [
+        "created_at",
+        "updated_at",
+        "authorized_at",
+        "launched_at",
+        "completed_at",
+        "aborted_at",
+    ])
+    return mission
+
+async def _broadcast_mission_update(action: str, mission: dict):
+    await manager.broadcast({
+        "type": "mission_update",
+        "action": action,
+        "mission": mission,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+
+# UUID regex for mission_id paths (consistent with /drones/{drone_id}). Stops
+# `/missions/generate` from being misrouted as `mission_id == "generate"`.
+_MISSION_ID_PATTERN = _DRONE_ID_PATTERN
+
+# Authorize-time gate: a mission with go_score below this floor remains a
+# draft and cannot launch. Stops click-through auth on clearly-not-ready plans.
+MISSION_GO_SCORE_FLOOR = 0.6
+
+
+async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
+    """Server-side mission planner.
+
+    Picks the zone (auto if not given), scores available drones, computes
+    readiness checks that can actually abort the launch, and packages a
+    counterfactual `evidence` block so operators can see what the system
+    expects to *change* by deploying. Returns a dict that satisfies
+    `Mission.model_validate(...)`.
+
+    Deterministic + transparent on purpose — every input that drives a
+    number on the dashboard comes from a Mongo document the operator can
+    inspect. When we swap in real ML for biodiversity forecasting (BioCLIP,
+    N-BEATS, etc.), only this function changes.
+    """
+    if req.zone_id:
+        zone = await db.zones.find_one({"id": req.zone_id}, {"_id": 0})
+        if not zone:
+            raise HTTPException(status_code=404, detail=f"Zone {req.zone_id} not found")
+    else:
+        candidates = await db.zones.find({}, {"_id": 0}).sort("biodiversity_index", 1).to_list(1)
+        if not candidates:
+            raise HTTPException(status_code=409, detail="No zones available to plan a mission for")
+        zone = candidates[0]
+
+    biodiversity = float(zone.get("biodiversity_index", 0.5))
+    soil_health = float(zone.get("soil_health", 0.5))
+    priority_weight = {"critical": 1.0, "high": 0.8, "medium": 0.6, "low": 0.4}.get(
+        zone.get("priority", "medium"), 0.6
+    )
+
+    all_drones = await db.drones.find({}, {"_id": 0}).to_list(500)
+    selected: List[dict] = []
+    rejected: List[dict] = []
+    for d in sorted(all_drones, key=lambda x: -float(x.get("battery", 0))):
+        if d.get("status") not in {"idle", "charging"}:
+            rejected.append({"id": d["id"], "name": d.get("name"), "reason": f"status={d.get('status')}"})
+            continue
+        if float(d.get("battery", 0)) < 50:
+            rejected.append({"id": d["id"], "name": d.get("name"), "reason": f"battery={d.get('battery')}<50"})
+            continue
+        if len(selected) < req.max_drones:
+            selected.append(d)
+        else:
+            rejected.append({"id": d["id"], "name": d.get("name"), "reason": "fleet cap reached"})
+
+    geofence_docs = await db.geofences.find({"zone_id": zone["id"]}, {"_id": 0}).to_list(50)
+    active_in_zone = await db.missions.count_documents(
+        {"zone_id": zone["id"], "status": {"$in": ["authorized", "active"]}}
+    )
+
+    avg_battery = sum(float(d.get("battery", 0)) for d in selected) / max(1, len(selected))
+    readiness = [
+        {"label": "drones_available", "value": min(1.0, len(selected) / max(1, req.max_drones))},
+        {"label": "battery_avg", "value": min(1.0, avg_battery / 100.0)},
+        {"label": "geofence_clear", "value": 1.0 if not geofence_docs else 0.7},
+        {"label": "no_conflicting_mission", "value": 0.0 if active_in_zone else 1.0},
+        # Weather is mocked until the real provider integration lands; keep
+        # the slot so the UI doesn't have to know it's missing.
+        {"label": "weather_clear", "value": 0.85},
+    ]
+    weights = {"drones_available": 0.35, "battery_avg": 0.20, "geofence_clear": 0.10,
+               "no_conflicting_mission": 0.20, "weather_clear": 0.15}
+    go_score = sum(c["value"] * weights[c["label"]] for c in readiness)
+
+    risk_score = round(min(1.0, (1 - biodiversity) * priority_weight + 0.1), 3)
+
+    decay_per_week = max(0.0, 0.04 * priority_weight) if biodiversity < 0.6 else 0.01
+    boost_per_week = 0.06 if req.mission_type == "intervene" else 0.03
+    evidence = {
+        "zone_state_at_plan": {
+            "biodiversity_index": biodiversity,
+            "soil_health": soil_health,
+            "priority": zone.get("priority"),
+        },
+        "counterfactual": {
+            "if_no_deploy_7d": {"biodiversity_index_delta": round(-decay_per_week, 3)},
+            "if_deploy_7d":    {"biodiversity_index_delta": round(boost_per_week, 3)},
+            "method": "linear-extrapolation-v0 (placeholder for forecasting model)",
+        },
+        "rejected_drones": rejected,
+        "active_geofences": [g.get("id") for g in geofence_docs],
+        "operator_notes": req.notes,
+    }
+
+    coverage_km = round(zone.get("radius_km", 5.0) * 2 * len(selected), 2)
+    duration = 30 + 10 * len(selected) + (15 if req.mission_type == "inspect" else 0)
+    timeline = [
+        f"T-30m  pre-flight checks ({len(selected)} drones)",
+        f"T-15m  weather + geofence sweep",
+        f"T-0    launch sequence — {zone.get('name')}",
+        f"T+{duration//2}m  mid-mission telemetry checkpoint",
+        f"T+{duration}m  return-to-base, debrief",
+    ]
+    directives = [
+        f"Maintain altitude 60-80m; respect {len(geofence_docs)} active geofence(s)",
+        "Photograph any anomaly with confidence > 0.7 and emit alert",
+        "Abort and RTB if any drone battery < 25% mid-mission",
+    ]
+    if req.mission_type == "intervene":
+        directives.append("Drop seed pod at zone center (subject to GO confirmation)")
+
+    return {
+        "name": f"{req.mission_type.title()} • {zone.get('name')}",
+        "zone_id": zone["id"],
+        "zone_name": zone.get("name", ""),
+        "mission_type": req.mission_type,
+        "drone_ids": [d["id"] for d in selected],
+        "sensor_ids": [],
+        "geofence_ids": [g["id"] for g in geofence_docs],
+        "risk_score": risk_score,
+        "go_score": round(go_score, 3),
+        "estimated_duration_mins": duration,
+        "coverage_km": coverage_km,
+        "readiness": readiness,
+        "timeline": timeline,
+        "directives": directives,
+        "evidence": evidence,
+    }
+
+
+async def _validate_mission_can_authorize(mission: dict):
+    if mission.get("status") != "ready":
+        raise HTTPException(status_code=400, detail=f"Mission cannot be authorized from {mission.get('status')} status")
+    if float(mission.get("go_score", 0)) < MISSION_GO_SCORE_FLOOR:
+        raise HTTPException(status_code=400, detail="Mission GO score is below launch floor")
+    drone_ids = mission.get("drone_ids", [])
+    if not drone_ids:
+        raise HTTPException(status_code=400, detail="Mission has no assigned drones")
+    valid_drones = await db.drones.find({
+        "id": {"$in": drone_ids},
+        "status": {"$in": ["idle", "charging"]},
+        "battery": {"$gte": 50},
+    }, {"_id": 0}).to_list(len(drone_ids))
+    if len(valid_drones) != len(drone_ids):
+        raise HTTPException(status_code=400, detail="Mission has invalid or unavailable drone assignments")
+
+
+async def _deploy_mission_assets(mission: dict) -> dict:
+    zone = await db.zones.find_one({"id": mission["zone_id"]}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Mission zone not found")
+
+    updated_count = 0
+    for drone_id in mission.get("drone_ids", []):
+        result = await db.drones.update_one(
+            {"id": drone_id},
+            {"$set": {
+                "status": "deployed",
+                "zone_id": mission["zone_id"],
+                "mission_type": mission["mission_type"],
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
+        if result.modified_count > 0:
+            updated_count += 1
+
+    alert = Alert(
+        title="Mission Authorized",
+        message=f"{updated_count} drones deployed to {zone['name']} for {mission['mission_type']}",
+        severity="info",
+        zone_id=mission["zone_id"],
+        alert_type="mission",
+    )
+    alert_doc = alert.model_dump()
+    alert_doc["created_at"] = alert_doc["created_at"].isoformat()
+    await db.alerts.insert_one(alert_doc)
+
+    return {"message": f"Mission active with {updated_count} drones deployed", "deployed_count": updated_count}
+
+async def _build_post_mission_report(mission: dict, completed_at: str, audit: List[dict]) -> dict:
+    drone_ids = mission.get("drone_ids", [])
+    sensor_ids = mission.get("sensor_ids", [])
+    geofence_ids = mission.get("geofence_ids", [])
+
+    drones = await db.drones.find({"id": {"$in": drone_ids}}, {"_id": 0}).to_list(max(1, len(drone_ids)))
+    sensors = await db.sensors.find({"id": {"$in": sensor_ids}}, {"_id": 0}).to_list(max(1, len(sensor_ids)))
+    geofences = await db.geofences.find({"id": {"$in": geofence_ids}}, {"_id": 0}).to_list(max(1, len(geofence_ids)))
+    alerts = await db.alerts.find({"zone_id": mission.get("zone_id")}, {"_id": 0}).sort("created_at", -1).to_list(10)
+
+    drone_evidence = [{
+        "id": drone.get("id"),
+        "name": drone.get("name"),
+        "status": drone.get("status"),
+        "battery": drone.get("battery", 0),
+        "location": {
+            "latitude": drone.get("latitude", 0),
+            "longitude": drone.get("longitude", 0),
+            "altitude": drone.get("altitude", 0),
+        },
+        "mission_type": drone.get("mission_type"),
+    } for drone in drones]
+    sensor_evidence = [{
+        "id": sensor.get("id"),
+        "name": sensor.get("name"),
+        "sensor_type": sensor.get("sensor_type"),
+        "status": sensor.get("status"),
+        "current_value": sensor.get("current_value"),
+        "unit": sensor.get("unit", ""),
+        "last_reading": sensor.get("last_reading"),
+    } for sensor in sensors]
+    geofence_context = [{
+        "id": fence.get("id"),
+        "name": fence.get("name"),
+        "fence_type": fence.get("fence_type"),
+        "radius_km": fence.get("radius_km"),
+        "alerts_enabled": fence.get("alerts_enabled", True),
+    } for fence in geofences]
+
+    low_battery = [d for d in drone_evidence if float(d.get("battery") or 0) < 25]
+    offline_sensors = [s for s in sensor_evidence if s.get("status") != "active"]
+    anomalies = []
+    if low_battery:
+        anomalies.append({"type": "battery", "severity": "warning", "count": len(low_battery)})
+    if offline_sensors:
+        anomalies.append({"type": "sensor", "severity": "warning", "count": len(offline_sensors)})
+    if not anomalies:
+        anomalies.append({"type": "mission", "severity": "info", "message": "No critical anomalies detected during completion sweep."})
+
+    counterfactual = mission.get("evidence", {}).get("counterfactual", {})
+    impact_delta = counterfactual.get("if_deploy_7d", {}).get("biodiversity_index_delta", 0)
+    restoration_impact = {
+        "biodiversity_delta_7d_estimate": impact_delta,
+        "coverage_km": mission.get("coverage_km", 0),
+        "risk_score_at_plan": mission.get("risk_score", 0),
+        "confidence": round(min(0.92, 0.55 + len(drone_evidence) * 0.08 + len(sensor_evidence) * 0.03), 2),
+        "method": counterfactual.get("method", "mission-evidence-rollup-v0"),
+    }
+
+    return {
+        "mission_id": mission.get("id"),
+        "mission_name": mission.get("name"),
+        "zone_id": mission.get("zone_id"),
+        "zone_name": mission.get("zone_name"),
+        "status": "completed",
+        "started_at": mission.get("launched_at"),
+        "completed_at": completed_at,
+        "duration_mins_planned": mission.get("estimated_duration_mins", 0),
+        "mission_type": mission.get("mission_type"),
+        "drones": drone_evidence,
+        "sensors": sensor_evidence,
+        "geofences": geofence_context,
+        "alerts": alerts,
+        "timeline": mission.get("timeline", []),
+        "directives": mission.get("directives", []),
+        "audit_trail": audit,
+        "anomalies": anomalies,
+        "restoration_impact": restoration_impact,
+        "recommendations": [
+            "Review drone media against anomaly thresholds before closing field actions.",
+            "Schedule follow-up sensor validation within 24 hours for the target zone.",
+            "Compare biodiversity estimate against next patrol to validate the impact model.",
+        ],
+    }
+
+@api_router.post("/missions/generate", response_model=Mission)
+async def generate_mission(req: MissionGenerateRequest, request: Request):
+    """Plan a mission server-side. The body is intentionally minimal — the
+    *plan* (drone selection, readiness, risk, counterfactual evidence) is
+    the product, and is computed here, not by the client.
+
+    Result lands in `ready` status if go_score ≥ MISSION_GO_SCORE_FLOOR;
+    below that it's `draft` and cannot be authorized.
+    """
+    user = await get_current_user(request)
+    plan = await _plan_mission(req, user)
+    initial_status = "ready" if plan["go_score"] >= MISSION_GO_SCORE_FLOOR else "draft"
+    detail = (
+        f"Plan synthesized for zone {plan['zone_name']} "
+        f"(go_score={plan['go_score']}, risk={plan['risk_score']}, "
+        f"drones={len(plan['drone_ids'])}, status={initial_status})."
+    )
+    mission = Mission(
+        **plan,
+        status=initial_status,
+        created_by=user.get("id"),
+        created_by_name=user.get("name") or user.get("email"),
+        audit_trail=[_mission_audit_event("generated", user, detail)],
+    )
+    doc = mission.model_dump()
+    for field in ["created_at", "updated_at"]:
+        doc[field] = doc[field].isoformat()
+    saved = await insert_and_return(db.missions, doc)
+    await _broadcast_mission_update("generated", saved)
+    return saved
+
+@api_router.get("/missions", response_model=List[Mission])
+async def get_missions():
+    missions = await db.missions.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return [_deserialize_mission(mission) for mission in missions]
+
+@api_router.get("/missions/{mission_id}", response_model=Mission)
+async def get_mission(mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN)):
+    mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return _deserialize_mission(mission)
+
+@api_router.post("/missions/{mission_id}/authorize", response_model=Mission)
+async def authorize_mission(request: Request, mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN)):
+    user = await get_current_user(request)
+    mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    await _validate_mission_can_authorize(mission)
+
+    launch_result = await _deploy_mission_assets(mission)
+    now = datetime.now(timezone.utc).isoformat()
+    audit = mission.get("audit_trail", [])
+    audit.append(_mission_audit_event("authorized", user, "Operator authorized mission launch."))
+    audit.append(_mission_audit_event("launched", user, launch_result["message"]))
+    await db.missions.update_one(
+        {"id": mission_id},
+        {"$set": {
+            "status": "active",
+            "authorized_by": user.get("id"),
+            "authorized_at": now,
+            "launched_at": now,
+            "launch_result": launch_result,
+            "audit_trail": audit,
+            "updated_at": now,
+        }}
+    )
+    updated = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    await _broadcast_mission_update("authorized", updated)
+    return _deserialize_mission(updated)
+
+@api_router.post("/missions/{mission_id}/abort", response_model=Mission)
+async def abort_mission(abort: MissionAbortRequest, request: Request, mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN)):
+    user = await get_current_user(request)
+    mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if mission.get("status") != "active":
+        raise HTTPException(status_code=400, detail=f"Mission cannot be aborted from {mission.get('status')} status")
+
+    now = datetime.now(timezone.utc).isoformat()
+    audit = mission.get("audit_trail", [])
+    audit.append(_mission_audit_event("aborted", user, abort.reason))
+    await db.missions.update_one(
+        {"id": mission_id},
+        {"$set": {"status": "aborted", "aborted_at": now, "audit_trail": audit, "updated_at": now}}
+    )
+    updated = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    await _broadcast_mission_update("aborted", updated)
+    return _deserialize_mission(updated)
+
+@api_router.post("/missions/{mission_id}/complete", response_model=Mission)
+async def complete_mission(request: Request, mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN)):
+    user = await get_current_user(request)
+    mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    if mission.get("status") != "active":
+        raise HTTPException(status_code=400, detail=f"Mission cannot be completed from {mission.get('status')} status")
+
+    summary = (
+        f"Mission completed for {mission.get('zone_name')}. "
+        f"{len(mission.get('drone_ids', []))} drones, {len(mission.get('sensor_ids', []))} sensors, "
+        f"risk score {mission.get('risk_score', 0)}."
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    audit = mission.get("audit_trail", [])
+    audit.append(_mission_audit_event("completed", user, summary))
+    report = await _build_post_mission_report(mission, now, audit)
+    await db.missions.update_one(
+        {"id": mission_id},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now,
+            "post_mission_summary": summary,
+            "post_mission_report": report,
+            "audit_trail": audit,
+            "updated_at": now,
+        }}
+    )
+    updated = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    await _broadcast_mission_update("completed", updated)
+    return _deserialize_mission(updated)
+
 # Zone endpoints
 @api_router.get("/zones", response_model=List[Zone])
 async def get_zones():

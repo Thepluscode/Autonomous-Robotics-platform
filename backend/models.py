@@ -195,6 +195,69 @@ class DashboardStats(BaseModel):
     avg_soil_health: float
 
 
+# ==================== MISSIONS ====================
+
+class MissionReadinessCheck(BaseModel):
+    label: str
+    value: float
+
+
+class MissionGenerateRequest(BaseModel):
+    """Minimal input the operator (or an AI agent) sends to ask for a plan.
+
+    Everything else on `MissionCreate` (drones, readiness, risk, timeline,
+    directives, counterfactual evidence) is computed server-side by the
+    planner. This is the moonshot wedge: the *plan* is the product, not the
+    UI of clicking through a wizard.
+    """
+    zone_id: Optional[str] = None  # if absent, planner picks the highest-leverage zone
+    mission_type: str = "patrol"   # patrol | inspect | intervene
+    max_drones: int = 3            # planner won't assign more than this; may assign fewer
+    notes: str = ""                # free-text context the operator wants surfaced in the audit trail
+
+
+class MissionAbortRequest(BaseModel):
+    """Aborts must carry a reason — silent aborts hide signal we need to learn from."""
+    reason: str
+
+
+class MissionCreate(BaseModel):
+    name: str
+    zone_id: str
+    zone_name: str
+    mission_type: str
+    drone_ids: List[str] = []
+    sensor_ids: List[str] = []
+    geofence_ids: List[str] = []
+    risk_score: float = 0.0
+    go_score: float = 0.0
+    estimated_duration_mins: int = 0
+    coverage_km: float = 0.0
+    readiness: List[MissionReadinessCheck] = []
+    timeline: List[str] = []
+    directives: List[str] = []
+    evidence: dict = {}
+
+
+class Mission(MissionCreate):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    status: str = "draft"  # draft, ready, authorized, active, completed, aborted
+    created_by: Optional[str] = None
+    created_by_name: Optional[str] = None
+    authorized_by: Optional[str] = None
+    authorized_at: Optional[datetime] = None
+    launched_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    aborted_at: Optional[datetime] = None
+    launch_result: Optional[dict] = None
+    post_mission_summary: str = ""
+    post_mission_report: dict = {}
+    audit_trail: List[dict] = []
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # ==================== PATROL ====================
 
 class PatrolWaypoint(BaseModel):
