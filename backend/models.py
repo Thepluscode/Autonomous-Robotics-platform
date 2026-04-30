@@ -254,6 +254,34 @@ class RobotDeployRequest(BaseModel):
     mission_type: str
 
 
+class Observation(BaseModel):
+    """A signed observation in the verifiable rewilding chain.
+
+    `digest` is SHA-256 over a canonical JSON of (observed_at, source_type,
+    source_id, zone_id, payload). `signature` is Ed25519(digest_body) under
+    the key referenced by `key_id`. The public key is published at
+    `/.well-known/keys.json` so verifiers don't need to trust this server.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    observed_at: datetime
+    source_type: str           # drone_telemetry | robot_telemetry | sensor_reading | zone_state | mission_event
+    source_id: str             # UUID of the asset / zone / mission that produced this
+    zone_id: Optional[str] = None
+    payload: dict = {}
+    digest: str
+    signature: str
+    key_id: str
+    alg: str = "Ed25519"
+
+
+class ObservationVerifyResult(BaseModel):
+    valid: bool
+    reason: str
+    key_id: Optional[str] = None
+    current_key_id: Optional[str] = None
+
+
 class DashboardStats(BaseModel):
     total_drones: int           # legacy aerial-only count, preserved
     active_drones: int          # legacy aerial-only count, preserved

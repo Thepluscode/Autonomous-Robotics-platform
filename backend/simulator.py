@@ -73,6 +73,32 @@ async def tick_drone_simulation(db, manager) -> List[dict]:
             }},
         )
 
+        # Provenance: every position update is a signed observation. The
+        # planner later attaches digests of these to mission.evidence so
+        # the counterfactual is anchored to verifiable inputs, not just
+        # current Mongo state.
+        try:
+            from provenance import record_observation
+            await record_observation(
+                db,
+                source_type="drone_telemetry",
+                source_id=drone["id"],
+                zone_id=drone.get("zone_id"),
+                payload={
+                    "latitude": new_lat,
+                    "longitude": new_lng,
+                    "battery": battery,
+                    "status": drone.get("status"),
+                    "dist_moved_deg": round(dist_moved, 5),
+                },
+                observed_at=last_active,
+            )
+        except Exception as exc:
+            # Provenance failures must not stop the simulator — log + carry
+            # on. Missing observations show up as gaps in attestation,
+            # which is itself a signal worth investigating later.
+            logging.warning("provenance: failed to record drone observation: %s", exc)
+
         updates.append({
             "id": drone["id"],
             "name": drone.get("name"),

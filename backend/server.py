@@ -23,6 +23,7 @@ async def _safe_insert_one(self, document, *args, **kwargs):  # type: ignore[ove
 AsyncIOMotorCollection.insert_one = _safe_insert_one  # type: ignore[assignment]
 import os
 import json
+import hashlib
 import logging
 import asyncio
 import secrets
@@ -36,6 +37,13 @@ from datetime import datetime, timezone, timedelta
 import random
 import math
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from provenance import (
+    get_key_id,
+    public_key_jwk,
+    record_observation as _record_observation,
+    sign_observation,
+    verify_observation,
+)
 from simulator import (
     tick_drone_simulation,
     run_drone_simulation_loop,
@@ -1540,6 +1548,22 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
         "operator_notes": req.notes,
     }
 
+    # Provenance: attach digests of recent signed zone observations as
+    # source_hashes. The mission plan is now *attestable* — anyone can
+    # walk the digests to /api/observations/{id} and verify each
+    # signature independently against /.well-known/keys.json.
+    recent_obs = await db.observations.find(
+        {"zone_id": zone["id"]},
+        {"_id": 0, "id": 1, "digest": 1, "source_type": 1, "observed_at": 1, "key_id": 1},
+    ).sort("observed_at", -1).limit(50).to_list(50)
+    evidence["source_hashes"] = [o["digest"] for o in recent_obs if o.get("digest")]
+    evidence["attestation"] = {
+        "key_id": get_key_id(),
+        "observation_count": len(recent_obs),
+        "verify_endpoint": "/api/observations/verify",
+        "public_key_jwk_url": "/.well-known/keys.json",
+    }
+
     mobile_count = len(assigned_mobile_assets)
     coverage_km = round(zone.get("radius_km", 5.0) * 2 * max(1, mobile_count), 2)
     duration = 30 + 10 * mobile_count + (15 if req.mission_type == "inspect" else 0)
@@ -2493,6 +2517,92 @@ async def root():
     return {"message": "Autonomous Ecosystem Architect API", "version": "2.0.0"}
 
 # Include router
+# ==================== PROVENANCE / OBSERVATION CHAIN ====================
+# The verifiable rewilding layer. Every observation we record is signed
+# with Ed25519 against a key whose public half is published at
+# /.well-known/keys.json. Auditors verify the chain without trusting our
+# servers — this is what turns the counterfactual chart into a primitive
+# conservation credit issuers (Verra, Gold Standard) can defend.
+
+@app.get("/.well-known/keys.json", include_in_schema=False)
+async def well_known_keys():
+    """Public verification keys (JWK format). Standard discovery path
+    for any JOSE-compatible verifier — Ed25519 is OKP/Ed25519 in JWK terms."""
+    return {"keys": [public_key_jwk()]}
+
+
+@api_router.get("/observations")
+async def list_observations(
+    zone_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    since: Optional[str] = None,
+    limit: int = 200,
+):
+    query: dict = {}
+    if zone_id:
+        query["zone_id"] = zone_id
+    if source_type:
+        query["source_type"] = source_type
+    if since:
+        query["observed_at"] = {"$gte": since}
+    cap = max(1, min(int(limit or 200), 1000))
+    return await db.observations.find(query, {"_id": 0}).sort("observed_at", -1).limit(cap).to_list(cap)
+
+
+@api_router.get("/observations/{observation_id}")
+async def get_observation(observation_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    obs = await db.observations.find_one({"id": observation_id}, {"_id": 0})
+    if not obs:
+        raise HTTPException(status_code=404, detail="Observation not found")
+    ok, reason = verify_observation(obs)
+    return {**obs, "verification": {"valid": ok, "reason": reason}}
+
+
+@api_router.post("/observations/verify")
+async def verify_observation_endpoint(observation: dict):
+    """Externally-verifiable: pass any signed observation, get back
+    {valid, reason}. Doesn't require the observation to live in our DB —
+    third-party auditors can hand-construct or fetch the payload from
+    elsewhere and confirm it was signed by us."""
+    ok, reason = verify_observation(observation)
+    return {
+        "valid": ok,
+        "reason": reason,
+        "key_id": observation.get("key_id"),
+        "current_key_id": get_key_id(),
+    }
+
+
+@api_router.get("/zones/{zone_id}/attestation")
+async def zone_attestation(
+    zone_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    hours: int = 24,
+):
+    """Aggregate root over recent signed zone observations. Auditor
+    flow: GET this → verify each observation's signature → recompute
+    the aggregate root → match. The flow is O(N), good enough for v1
+    (upgrade to a real Merkle tree when N gets large)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, min(int(hours or 24), 24 * 30)))).isoformat()
+    obs = await db.observations.find(
+        {"zone_id": zone_id, "observed_at": {"$gte": cutoff}},
+        {"_id": 0, "id": 1, "digest": 1, "observed_at": 1, "source_type": 1, "source_id": 1, "key_id": 1, "signature": 1},
+    ).sort("observed_at", 1).to_list(5000)
+    digests = [o["digest"] for o in obs if o.get("digest")]
+    aggregate = (
+        hashlib.sha256("\n".join(sorted(digests)).encode("utf-8")).hexdigest()
+        if digests
+        else None
+    )
+    return {
+        "zone_id": zone_id,
+        "since": cutoff,
+        "count": len(obs),
+        "aggregate_root": aggregate,
+        "key_id": get_key_id(),
+        "observations": obs,
+    }
+
+
 app.include_router(api_router)
 
 # CORS — credentials=True requires an explicit origin allowlist (the wildcard

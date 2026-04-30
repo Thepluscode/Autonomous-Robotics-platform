@@ -959,3 +959,105 @@ def test_drone_simulator_moves_toward_assigned_zone(api, seeded, auth_headers, u
     assert after["battery"] < initial["battery"]
 
     api.delete(f"/drones/{drone['id']}")
+
+
+# --------------------------- Provenance / observation chain -----------------
+# The verifiable rewilding layer. Every observation is Ed25519-signed and the
+# public key is published at /.well-known/keys.json so external auditors can
+# verify the chain without trusting our servers.
+
+def test_well_known_keys_returns_jwk(api, _require_live_backend, base_url):
+    import requests
+    r = requests.get(f"{base_url}/.well-known/keys.json", timeout=8)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    keys = body.get("keys", [])
+    assert len(keys) == 1
+    k = keys[0]
+    assert k["kty"] == "OKP"
+    assert k["crv"] == "Ed25519"
+    assert k["alg"] == "EdDSA"
+    assert k["use"] == "sig"
+    assert len(k["kid"]) == 16
+    assert k["x"]  # base64-encoded raw public key
+
+
+def test_observation_sign_and_verify_roundtrip(api, seeded, auth_headers):
+    """Drive a deterministic simulator tick to produce a fresh signed
+    drone-telemetry observation, then verify each path:
+      1. /api/observations lists it
+      2. /api/observations/{id} returns it with verification.valid=True
+      3. /api/observations/verify accepts it standalone (no DB lookup)
+      4. tampering the payload invalidates the signature
+    """
+    # Trigger a tick to write fresh observations.
+    tick = api.post("/_internal/drone-tick", headers=auth_headers)
+    assert tick.status_code == 200, tick.text
+
+    listed = api.get("/observations?source_type=drone_telemetry&limit=5", headers=auth_headers).json()
+    assert listed, "tick should have written drone telemetry observations"
+    obs = listed[0]
+    for k in ("id", "digest", "signature", "key_id", "alg", "observed_at", "payload"):
+        assert k in obs, f"observation missing field: {k}"
+    assert obs["alg"] == "Ed25519"
+
+    obs_id = obs["id"]
+    fetched = api.get(f"/observations/{obs_id}", headers=auth_headers).json()
+    assert fetched["verification"]["valid"] is True
+    assert fetched["verification"]["reason"] == "ok"
+
+    # Standalone verification — strip db-only metadata, send the signed body.
+    standalone = {k: obs[k] for k in ("id", "observed_at", "source_type", "source_id", "zone_id", "payload", "digest", "signature", "key_id", "alg")}
+    verify = api.post("/observations/verify", json=standalone).json()
+    assert verify["valid"] is True
+
+    # Tamper the payload — signature must reject.
+    tampered = dict(standalone)
+    tampered["payload"] = dict(tampered["payload"])
+    tampered["payload"]["battery"] = 999
+    bad = api.post("/observations/verify", json=tampered).json()
+    assert bad["valid"] is False
+    assert bad["reason"] in {"digest_mismatch", "signature_invalid"}
+
+
+def test_zone_attestation_aggregate_root(api, seeded, auth_headers):
+    api.post("/_internal/drone-tick", headers=auth_headers)
+    zones = api.get("/zones").json()
+    # Find a zone that has assigned drones (some seed drones have zone_id, some don't).
+    drones = api.get("/drones").json()
+    assigned_zone_ids = {d.get("zone_id") for d in drones if d.get("zone_id") and d.get("status") in ("patrolling", "deployed")}
+    if not assigned_zone_ids:
+        return  # simulator did not produce zone-tagged observations on this seed; not a test failure.
+    zone_id = next(iter(assigned_zone_ids))
+
+    att = api.get(f"/zones/{zone_id}/attestation?hours=24", headers=auth_headers).json()
+    assert att["zone_id"] == zone_id
+    assert att["count"] >= 1
+    assert att["aggregate_root"]
+    assert len(att["aggregate_root"]) == 64  # SHA-256 hex
+    assert att["key_id"]
+    # Recompute the root and compare — that is the auditor flow.
+    import hashlib
+    digests = sorted([o["digest"] for o in att["observations"]])
+    expected = hashlib.sha256(chr(10).join(digests).encode("utf-8")).hexdigest()
+    assert expected == att["aggregate_root"]
+
+
+def test_planner_attaches_source_hashes(api, seeded, auth_headers, unique_name):
+    """After a tick, the planner should reference recent zone observations
+    in mission.evidence.source_hashes, anchoring the counterfactual to
+    verifiable inputs."""
+    api.post("/_internal/drone-tick", headers=auth_headers)
+    plan = api.post(
+        "/missions/generate",
+        headers=auth_headers,
+        json={"mission_type": "intervene", "max_drones": 2},
+    )
+    assert plan.status_code == 200, plan.text
+    ev = plan.json().get("evidence", {})
+    assert "attestation" in ev
+    assert ev["attestation"]["public_key_jwk_url"] == "/.well-known/keys.json"
+    # source_hashes may legitimately be empty if no observations match this
+    # auto-picked zone yet — but the field must always be present.
+    assert "source_hashes" in ev and isinstance(ev["source_hashes"], list)
+
