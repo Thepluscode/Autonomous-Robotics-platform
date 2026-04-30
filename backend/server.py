@@ -947,6 +947,48 @@ async def get_robots(robot_type: Optional[str] = None, status: Optional[str] = N
     return [_deserialize_robot(robot) for robot in robots]
 
 
+# Multi-domain feeds — analog of /drones/feeds for the generic robotics fleet.
+# Registered before /robots/{robot_id}; the UUID Path regex on that route
+# also defends against the literal "feeds" being captured as a robot_id, but
+# routing this explicitly keeps semantics obvious.
+_ROBOT_FEED_LABEL = {
+    "aerial": "live-aerial",
+    "ground": "ground-cam",
+    "aquatic": "subsea",
+    "fixed_sensor": "telemetry",
+    "orbital": "satellite",
+}
+_ROBOT_ACTIVE_STATUSES = {"deployed", "patrolling", "mapping", "sampling", "tasking", "active"}
+
+@api_router.get("/robots/feeds")
+async def get_robot_feeds():
+    """Returns one feed entry per active robot across all domains. Aerial
+    robots reuse ZONE_FEED_IMAGES (canopy imagery); other domains carry a
+    feed_type tag so the UI can render an appropriate placeholder until
+    type-specific imagery / streams land. fixed_sensor and orbital return
+    a metadata-only feed (no video) — feed_url is the zone snapshot URL
+    so the panel renders, but feed_type signals to the client it's
+    telemetry, not video."""
+    robots = await db.robots.find(
+        {"status": {"$in": list(_ROBOT_ACTIVE_STATUSES)}}, {"_id": 0}
+    ).to_list(200)
+    feeds = []
+    for robot in robots:
+        zone = await db.zones.find_one({"id": robot.get("zone_id")}, {"_id": 0}) if robot.get("zone_id") else None
+        zone_type = zone.get("zone_type", "forest") if zone else "forest"
+        rt = robot.get("robot_type", "aerial")
+        feeds.append({
+            "robot_id": robot["id"],
+            "robot_name": robot.get("name"),
+            "robot_type": rt,
+            "zone_name": zone.get("name") if zone else None,
+            "feed_url": random.choice(ZONE_FEED_IMAGES.get(zone_type, ZONE_FEED_IMAGES["forest"])),
+            "feed_type": _ROBOT_FEED_LABEL.get(rt, "live"),
+            "status": "active",
+        })
+    return feeds
+
+
 @api_router.get("/robots/{robot_id}", response_model=Robot)
 async def get_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
     robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})

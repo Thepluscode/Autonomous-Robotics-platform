@@ -26,6 +26,17 @@ import { Input } from "../components/ui/input";
 import { Progress } from "../components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip as ReTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   alertAPI,
   droneAPI,
   geofenceAPI,
@@ -679,6 +690,79 @@ function ZoneRow({ zone, active, score, onSelect }) {
   );
 }
 
+function CounterfactualChart({ evidence }) {
+  const trajectories = evidence?.counterfactual?.trajectories;
+  const points = trajectories?.points || [];
+  if (!points.length) {
+    return (
+      <div className="rounded-sm border border-dashed border-border p-4 text-sm text-muted-foreground">
+        Forecast trajectories appear after mission generation. The planner emits a 14-day Monte Carlo
+        projection of biodiversity with vs. without this intervention, with 80% confidence bands.
+      </div>
+    );
+  }
+  // Recharts renders an Area between two values when dataKey is a tuple (lo, hi).
+  const data = points.map((p) => ({
+    day: p.day,
+    no_deploy: p.no_deploy_value,
+    no_deploy_band: [p.no_deploy_lo, p.no_deploy_hi],
+    with_deploy: p.with_deploy_value,
+    with_deploy_band: [p.with_deploy_lo, p.with_deploy_hi],
+  }));
+  const summary = trajectories.summary || {};
+  const horizon = trajectories.horizon_days ?? data.length - 1;
+  const fitQuality = trajectories.fit_quality ?? 0;
+  const delta = summary.horizon_delta ?? (summary.with_deploy_final ?? 0) - (summary.no_deploy_final ?? 0);
+  const positiveDelta = delta > 0;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-sm border border-border p-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            Counterfactual · biodiversity index
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+            {trajectories.method || "model"}
+          </span>
+        </div>
+        <div className="mt-1 flex items-baseline gap-3">
+          <span className="text-2xl font-semibold">
+            {positiveDelta ? "+" : ""}{(delta * 100).toFixed(1)}%
+          </span>
+          <span className="text-xs text-muted-foreground">
+            day-{horizon} delta · with vs. without intervention
+          </span>
+        </div>
+        <div className="mt-3 h-64 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="day" tick={{ fontSize: 11 }} label={{ value: "day", position: "insideBottom", offset: -2, fontSize: 10 }} />
+              <YAxis domain={[0, 1]} tick={{ fontSize: 11 }} tickFormatter={(v) => v.toFixed(1)} />
+              <ReTooltip
+                formatter={(value, name) => {
+                  if (Array.isArray(value)) return [`${value[0].toFixed(3)} — ${value[1].toFixed(3)}`, name];
+                  return [Number(value).toFixed(3), name];
+                }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Area type="monotone" dataKey="no_deploy_band" name="no-deploy 80% CI" fill="hsl(0 70% 60% / 0.15)" stroke="none" connectNulls isAnimationActive={false} />
+              <Area type="monotone" dataKey="with_deploy_band" name="with-deploy 80% CI" fill="hsl(144 60% 40% / 0.18)" stroke="none" connectNulls isAnimationActive={false} />
+              <Line type="monotone" dataKey="no_deploy" name="no deploy (mean)" stroke="hsl(0 70% 50%)" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="with_deploy" name="with deploy (mean)" stroke="hsl(144 60% 35%)" strokeWidth={2} dot={false} isAnimationActive={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Fit quality {(fitQuality * 100).toFixed(0)}% — domain Monte Carlo, not empirical fit. Replace
+          when zone observations history lands.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ReadinessCheck({ item }) {
   const Icon = item.icon;
   const tone = item.value >= 75 ? "bg-primary" : item.value >= 55 ? "bg-amber-500" : "bg-destructive";
@@ -769,6 +853,7 @@ function MissionTabs({ plan, mission }) {
       <TabsList className="grid w-full grid-cols-5">
         <TabsTrigger value="flight" data-testid="mission-tab-flight"><Route className="mr-1 h-3.5 w-3.5" />Flight</TabsTrigger>
         <TabsTrigger value="risk" data-testid="mission-tab-risk"><AlertTriangle className="mr-1 h-3.5 w-3.5" />Risk</TabsTrigger>
+        <TabsTrigger value="forecast" data-testid="mission-tab-forecast"><Activity className="mr-1 h-3.5 w-3.5" />Forecast</TabsTrigger>
         <TabsTrigger value="timeline" data-testid="mission-tab-timeline"><Timer className="mr-1 h-3.5 w-3.5" />Timeline</TabsTrigger>
         <TabsTrigger value="audit" data-testid="mission-tab-audit"><ClipboardCheck className="mr-1 h-3.5 w-3.5" />Audit</TabsTrigger>
         <TabsTrigger value="report" data-testid="mission-tab-report"><FileText className="mr-1 h-3.5 w-3.5" />Report</TabsTrigger>
@@ -799,6 +884,10 @@ function MissionTabs({ plan, mission }) {
             <p className="text-sm">{directive}</p>
           </div>
         ))}
+      </TabsContent>
+
+      <TabsContent value="forecast" className="mt-4 space-y-3">
+        <CounterfactualChart evidence={plan.evidence} />
       </TabsContent>
 
       <TabsContent value="timeline" className="mt-4 space-y-3">
