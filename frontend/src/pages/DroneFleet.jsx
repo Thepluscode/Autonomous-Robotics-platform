@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -72,6 +73,20 @@ export default function DroneFleet() {
 
   return (
     <div className="space-y-6" data-testid="drone-fleet-page">
+      <Card>
+        <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="font-heading text-lg font-semibold">Aerial Fleet</p>
+            <p className="text-sm text-muted-foreground">Drones and VTOL assets are one robotics domain inside the broader autonomous fleet.</p>
+          </div>
+          <Link to="/robotics" data-testid="view-robotics-platform-link">
+            <Button variant="outline" size="sm">
+              <Plane className="h-4 w-4" /> Robotics Platform
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+
       {/* Actions */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2 flex-wrap">

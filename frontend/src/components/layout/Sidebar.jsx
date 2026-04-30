@@ -7,7 +7,7 @@ import { Button } from "../ui/button";
 import {
   LayoutDashboard, Plane, MapPin, BarChart3, Brain, Route, FileText,
   Map, Camera, Bug, Cloud, TrendingUp, Zap, Shield, Users, Download,
-  Bell, LogOut, Leaf, ChevronLeft, ChevronRight, Rocket,
+  Bell, LogOut, Leaf, ChevronLeft, ChevronRight, Rocket, Bot,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 
@@ -23,7 +23,8 @@ const navSections = [
     label: "Operations",
     items: [
       { to: "/mission-control", icon: Rocket, label: "Mission Control", roles: ["admin", "field_operator", "scientist"] },
-      { to: "/drones", icon: Plane, label: "Drone Fleet", roles: ["admin", "field_operator"] },
+      { to: "/robotics", icon: Bot, label: "Robotics Fleet", roles: ["admin", "field_operator", "scientist"] },
+      { to: "/drones", icon: Plane, label: "Aerial Fleet", roles: ["admin", "field_operator"] },
       { to: "/zones", icon: MapPin, label: "Zone Management", roles: ["admin", "field_operator", "scientist"] },
       { to: "/patrols", icon: Route, label: "Patrol Scheduling", roles: ["admin", "field_operator"] },
       { to: "/patrol-reports", icon: FileText, label: "Patrol Reports" },

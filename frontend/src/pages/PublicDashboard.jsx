@@ -9,9 +9,11 @@ import {
   Binary,
   Camera,
   BadgeCheck,
+  Bot,
   CircleDot,
   Coins,
   Crosshair,
+  Cpu,
   Database,
   Dna,
   Eye,
@@ -27,6 +29,7 @@ import {
   Radar,
   ReceiptText,
   RadioTower,
+  Route,
   Rocket,
   Satellite,
   ShieldCheck,
@@ -40,6 +43,7 @@ import {
   Volume2,
   WalletCards,
   Waves,
+  Wrench,
 } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -163,6 +167,37 @@ const meshNodes = [
   { node: "reef relay 03", latency: "88 ms", link: 84 },
   { node: "sub P-01", latency: "104 ms", link: 79 },
   { node: "drone overwatch", latency: "37 ms", link: 93 },
+];
+
+const evidenceGraphNodes = [
+  { id: "obs", label: "Observation", source: "Verdant V-04 + acoustic buoy", detail: "Canopy moisture variance and pollinator density change detected.", icon: Eye, confidence: 91, tone: "cyan" },
+  { id: "ai", label: "AI detection", source: "EcoNet multimodal pass", detail: "Species corridor strengthening with low illegal-clearing risk.", icon: Sparkles, confidence: 88, tone: "emerald" },
+  { id: "mission", label: "Mission action", source: "Mission Control", detail: "Quiet drone pass authorized for seed-pod placement and ranger verification.", icon: Rocket, confidence: 84, tone: "amber" },
+  { id: "verify", label: "Verification", source: "Satellite / drone / soil proof", detail: "Before-after evidence reconciled against restoration permanence rules.", icon: BadgeCheck, confidence: 93, tone: "cyan" },
+  { id: "vault", label: "Vault record", source: "Genesis Vault GV-A02E", detail: "Species event anchored as continuity evidence for future audits.", icon: Dna, confidence: 90, tone: "emerald" },
+  { id: "credit", label: "Credit release", source: "EcoCoin EC-91A", detail: "Verified conservation credits released from escrow to restoration fund.", icon: Coins, confidence: 87, tone: "amber" },
+];
+
+const evidenceGraphProofs = [
+  { proof: "Hyperspectral tile", ref: "V-04/SWIR/AMZ-118", status: "verified" },
+  { proof: "Drone transect", ref: "Hive Amazon-03", status: "verified" },
+  { proof: "Acoustic sample", ref: "BIO-04:03:42", status: "attached" },
+  { proof: "Soil carbon lab", ref: "C-12 pending", status: "pending" },
+];
+
+const roboticsDomains = [
+  { id: "air", label: "Aerial robots", asset: "Seed drones / overwatch VTOL", count: 47, autonomy: 86, mission: "canopy mapping, swarm patrol, seed-pod placement", icon: Rocket, tone: "emerald" },
+  { id: "ground", label: "Ground robots", asset: "Soil rovers / ranger mules", count: 18, autonomy: 74, mission: "soil sampling, trail inspection, payload delivery", icon: Bot, tone: "amber" },
+  { id: "water", label: "Aquatic robots", asset: "Reef subs / kelp seeders", count: 9, autonomy: 81, mission: "coral repair, kelp seeding, ghost-net response", icon: Waves, tone: "cyan" },
+  { id: "sensor", label: "Fixed sensor robots", asset: "Camera traps / acoustic buoys", count: 126, autonomy: 68, mission: "bioacoustics, camera traps, weather and soil telemetry", icon: RadioTower, tone: "rose" },
+  { id: "orbital", label: "Orbital inputs", asset: "Verdant satellites / hyperspectral", count: 3, autonomy: 92, mission: "tasking cues, evidence capture, planetary-scale detection", icon: Satellite, tone: "sky" },
+];
+
+const roboticsMissionBus = [
+  { label: "sense", detail: "robots and sensors collect multimodal telemetry", icon: Radar },
+  { label: "plan", detail: "mission planner assigns the right machine to the job", icon: Cpu },
+  { label: "act", detail: "fleet executes with autonomy and operator guardrails", icon: Route },
+  { label: "verify", detail: "evidence graph closes the audit loop", icon: BadgeCheck },
 ];
 
 function formatNumber(value) {
@@ -298,6 +333,160 @@ function MilestoneGrid() {
         </div>
       ))}
     </div>
+  );
+}
+
+function RoboticsFleetLayer({ impact }) {
+  const [activeDomain, setActiveDomain] = useState(roboticsDomains[0].id);
+  const domain = roboticsDomains.find((item) => item.id === activeDomain) || roboticsDomains[0];
+  const totalRobots = roboticsDomains.reduce((sum, item) => sum + item.count, 0);
+  const fleetReadiness = clamp((impact.biodiversity * 0.28) + (impact.soil * 0.2) + (domain.autonomy * 0.48), 50, 98);
+  const DomainIcon = domain.icon;
+
+  return (
+    <section className="mx-auto grid max-w-7xl gap-5 px-5 py-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]" data-testid="robotics-fleet-layer">
+      <div className="relative overflow-hidden border border-white/12 bg-[#050706] p-5 md:p-6">
+        <div className="absolute inset-0 opacity-30" style={{
+          backgroundImage: "linear-gradient(rgba(52, 211, 153, 0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(251, 191, 36, 0.08) 1px, transparent 1px)",
+          backgroundSize: "42px 42px",
+        }} />
+        <div className="relative z-10 flex flex-wrap items-start justify-between gap-5">
+          <div className="max-w-3xl">
+            <Badge className="border-emerald-300/30 bg-emerald-300/15 text-emerald-100">Autonomous Robotics Platform</Badge>
+            <h2 className="mt-4 font-heading text-4xl font-black leading-tight text-white md:text-5xl">
+              One autonomy layer for air, land, water, sensors, and orbit.
+            </h2>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-white/58">
+              Gaia Prime is not a drone dashboard. It is a robotics operating surface that assigns the right autonomous asset to each restoration mission.
+            </p>
+          </div>
+          <Link to="/mission-control" data-testid="robotics-open-mission-control">
+            <Button className="bg-emerald-300 text-emerald-950 hover:bg-emerald-200">
+              Task Fleet <Bot className="h-4 w-4" />
+            </Button>
+          </Link>
+        </div>
+
+        <div className="relative z-10 mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5" data-testid="robotics-fleet-selector">
+          {roboticsDomains.map((item) => {
+            const Icon = item.icon;
+            const active = item.id === activeDomain;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveDomain(item.id)}
+                className={cn(
+                  "border p-3 text-left transition-colors",
+                  active ? "border-emerald-200/55 bg-emerald-200/12" : "border-white/12 bg-black/25 hover:border-emerald-200/35 hover:bg-emerald-200/8"
+                )}
+                data-testid={`robotics-domain-${item.id}`}
+              >
+                <Icon className={cn(
+                  "mb-4 h-5 w-5",
+                  item.tone === "amber" ? "text-amber-200" : item.tone === "cyan" ? "text-cyan-200" : item.tone === "rose" ? "text-rose-200" : item.tone === "sky" ? "text-sky-200" : "text-emerald-200"
+                )} strokeWidth={1.5} />
+                <p className="font-heading text-base font-bold text-white">{item.label}</p>
+                <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.18em] text-white/42">{item.count} assets</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="relative z-10 mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="relative min-h-[330px] overflow-hidden border border-white/12 bg-black/30 p-5" data-testid="robotics-active-domain">
+            <div className="absolute inset-0 opacity-20" style={{
+              backgroundImage: "radial-gradient(circle at 24% 40%, rgba(52, 211, 153, 0.35), transparent 26%), radial-gradient(circle at 74% 62%, rgba(251, 191, 36, 0.22), transparent 28%)",
+            }} />
+            <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-white/45">{domain.asset}</p>
+                <p className="mt-3 font-heading text-3xl font-black text-white md:text-4xl">{domain.label}</p>
+                <p className="mt-4 max-w-2xl text-sm leading-6 text-white/60">{domain.mission}</p>
+              </div>
+              <div className="flex h-16 w-16 items-center justify-center border border-white/15 bg-white/10">
+                <DomainIcon className="h-7 w-7 text-emerald-100" strokeWidth={1.5} />
+              </div>
+            </div>
+
+            <div className="relative z-10 mt-8 grid gap-4 sm:grid-cols-3">
+              {[
+                { label: "fleet readiness", value: `${Math.round(fleetReadiness)}%`, progress: fleetReadiness, color: "bg-emerald-300" },
+                { label: "autonomy level", value: `${domain.autonomy}%`, progress: domain.autonomy, color: "bg-cyan-300" },
+                { label: "active assets", value: formatNumber(domain.count), progress: clamp((domain.count / totalRobots) * 100), color: "bg-amber-300" },
+              ].map((metric) => (
+                <div key={metric.label} className="border border-white/12 bg-white/[0.035] p-4">
+                  <p className="font-heading text-2xl font-bold text-white">{metric.value}</p>
+                  <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">{metric.label}</p>
+                  <Progress value={metric.progress} className="mt-3 h-1.5 bg-white/10" indicatorClassName={metric.color} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid content-start gap-3" data-testid="robotics-mission-bus">
+            {roboticsMissionBus.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <div key={step.label} className="grid grid-cols-[38px_1fr] gap-3 border border-white/12 bg-black/25 p-3">
+                  <span className="flex h-9 w-9 items-center justify-center border border-emerald-200/30 bg-emerald-300/10">
+                    <Icon className="h-4 w-4 text-emerald-100" strokeWidth={1.5} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-heading text-base font-bold text-white">{index + 1}. {step.label}</p>
+                    <p className="mt-1 text-xs leading-5 text-white/52">{step.detail}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid content-start gap-4">
+        <div className="border border-white/12 bg-white/[0.035] p-5" data-testid="robotics-fleet-summary">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <p className="font-heading text-xl font-bold text-white">Fleet composition</p>
+            <Wrench className="h-5 w-5 text-amber-200" strokeWidth={1.5} />
+          </div>
+          <div className="space-y-4">
+            {roboticsDomains.map((item) => (
+              <div key={`${item.id}-summary`}>
+                <div className="mb-2 flex justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+                  <span>{item.label}</span>
+                  <span>{item.count}</span>
+                </div>
+                <Progress
+                  value={clamp((item.count / totalRobots) * 100)}
+                  className="h-1.5 bg-white/10"
+                  indicatorClassName={item.tone === "amber" ? "bg-amber-300" : item.tone === "cyan" ? "bg-cyan-300" : item.tone === "rose" ? "bg-rose-300" : item.tone === "sky" ? "bg-sky-300" : "bg-emerald-300"}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border border-white/12 bg-[#080704] p-5" data-testid="robotics-safety-layer">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <p className="font-heading text-xl font-bold text-white">Autonomy guardrails</p>
+            <ShieldCheck className="h-5 w-5 text-emerald-100" strokeWidth={1.5} />
+          </div>
+          <div className="grid gap-3">
+            {[
+              { label: "human authorization", value: "required for lethal-risk zones" },
+              { label: "geofence compliance", value: "active on all mobile robots" },
+              { label: "return-to-base", value: "battery and weather triggered" },
+              { label: "audit logging", value: "mission actions linked to evidence graph" },
+            ].map((item) => (
+              <div key={item.label} className="border border-white/12 bg-black/25 p-3">
+                <p className="font-heading text-base font-bold text-white">{item.label}</p>
+                <p className="mt-1 text-xs leading-5 text-white/50">{item.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1124,6 +1313,175 @@ function ProjectPoseidon({ impact }) {
   );
 }
 
+function GaiaEvidenceGraph({ impact }) {
+  const [activeNode, setActiveNode] = useState(evidenceGraphNodes[0].id);
+  const selected = evidenceGraphNodes.find((node) => node.id === activeNode) || evidenceGraphNodes[0];
+  const chainHealth = clamp((impact.biodiversity * 0.36) + (impact.soil * 0.28) + (selected.confidence * 0.34), 52, 98);
+
+  return (
+    <section className="mx-auto grid max-w-7xl gap-5 px-5 pb-10 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]" data-testid="gaia-evidence-graph">
+      <div className="relative overflow-hidden border border-white/12 bg-[#050806] p-5 md:p-6">
+        <div className="absolute inset-0 opacity-30" style={{
+          backgroundImage: "linear-gradient(90deg, rgba(52, 211, 153, 0.12) 1px, transparent 1px), linear-gradient(rgba(251, 191, 36, 0.08) 1px, transparent 1px)",
+          backgroundSize: "36px 36px",
+        }} />
+        <div className="relative z-10 flex flex-wrap items-start justify-between gap-5">
+          <div className="max-w-3xl">
+            <Badge className="border-emerald-300/30 bg-emerald-300/15 text-emerald-100">Gaia Evidence Graph</Badge>
+            <h2 className="mt-4 font-heading text-4xl font-black leading-tight text-white md:text-5xl">
+              One chain from signal to verified restoration value.
+            </h2>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-white/58">
+              Every satellite pass, drone action, acoustic signal, vault record, and credit release is linked into an auditable restoration graph.
+            </p>
+          </div>
+          <Link to="/mission-control" data-testid="evidence-open-mission-control">
+            <Button className="bg-emerald-300 text-emerald-950 hover:bg-emerald-200">
+              Inspect Chain <ShieldCheck className="h-4 w-4" />
+            </Button>
+          </Link>
+        </div>
+
+        <div className="relative z-10 mt-7 grid gap-3 md:grid-cols-6" data-testid="evidence-chain-selector">
+          {evidenceGraphNodes.map((node, index) => {
+            const Icon = node.icon;
+            const active = node.id === activeNode;
+            return (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() => setActiveNode(node.id)}
+                className={cn(
+                  "relative border p-3 text-left transition-colors",
+                  active ? "border-emerald-200/55 bg-emerald-200/12" : "border-white/12 bg-black/25 hover:border-emerald-200/35 hover:bg-emerald-200/8"
+                )}
+                data-testid={`evidence-node-${node.id}`}
+              >
+                {index < evidenceGraphNodes.length - 1 && (
+                  <span className="absolute -right-3 top-1/2 hidden h-px w-6 bg-emerald-200/35 md:block" />
+                )}
+                <Icon className={cn(
+                  "mb-4 h-5 w-5",
+                  node.tone === "amber" ? "text-amber-200" : node.tone === "cyan" ? "text-cyan-200" : "text-emerald-200"
+                )} strokeWidth={1.5} />
+                <p className="font-heading text-base font-bold text-white">{node.label}</p>
+                <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.18em] text-white/42">{node.confidence}% match</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="relative z-10 mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="relative min-h-[360px] overflow-hidden border border-white/12 bg-black/30 p-5" data-testid="evidence-active-node">
+            <div className="absolute inset-0 opacity-20" style={{
+              backgroundImage: "radial-gradient(circle at 22% 38%, rgba(52, 211, 153, 0.35), transparent 26%), radial-gradient(circle at 72% 62%, rgba(34, 211, 238, 0.25), transparent 28%)",
+            }} />
+            <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.28em] text-white/45">{selected.source}</p>
+                <p className="mt-3 font-heading text-3xl font-black text-white md:text-4xl">{selected.label}</p>
+                <p className="mt-4 max-w-2xl text-sm leading-6 text-white/60">{selected.detail}</p>
+              </div>
+              <Badge className={cn(
+                "border-white/15 bg-white/10",
+                selected.tone === "amber" ? "text-amber-100" : selected.tone === "cyan" ? "text-cyan-100" : "text-emerald-100"
+              )}>{selected.confidence}% confidence</Badge>
+            </div>
+
+            <div className="relative z-10 mt-8 grid gap-4 sm:grid-cols-3">
+              {[
+                { label: "chain health", value: `${Math.round(chainHealth)}%`, color: "bg-emerald-300" },
+                { label: "linked proofs", value: evidenceGraphProofs.length, color: "bg-cyan-300" },
+                { label: "audit depth", value: "6 hops", color: "bg-amber-300" },
+              ].map((metric) => (
+                <div key={metric.label} className="border border-white/12 bg-white/[0.035] p-4">
+                  <p className="font-heading text-2xl font-bold text-white">{metric.value}</p>
+                  <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/45">{metric.label}</p>
+                  <Progress value={metric.label === "linked proofs" ? 80 : metric.label === "audit depth" ? 72 : chainHealth} className="mt-3 h-1.5 bg-white/10" indicatorClassName={metric.color} />
+                </div>
+              ))}
+            </div>
+
+            <div className="relative z-10 mt-8 grid grid-cols-6 gap-2">
+              {evidenceGraphNodes.map((node) => (
+                <div key={`${node.id}-bar`} className="h-2 bg-white/10">
+                  <div
+                    className={cn("h-full", node.tone === "amber" ? "bg-amber-300" : node.tone === "cyan" ? "bg-cyan-300" : "bg-emerald-300")}
+                    style={{ width: `${node.confidence}%` }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid content-start gap-3" data-testid="evidence-proof-stack">
+            {evidenceGraphProofs.map((proof) => (
+              <div key={proof.ref} className="border border-white/12 bg-black/25 p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-heading text-lg font-bold text-white">{proof.proof}</p>
+                    <p className="mt-1 truncate font-mono text-[10px] uppercase tracking-[0.18em] text-white/42">{proof.ref}</p>
+                  </div>
+                  <Badge className={cn(
+                    "border-white/15 bg-white/10",
+                    proof.status === "verified" ? "text-emerald-100" : proof.status === "attached" ? "text-cyan-100" : "text-amber-100"
+                  )}>{proof.status}</Badge>
+                </div>
+                <Progress value={proof.status === "verified" ? 95 : proof.status === "attached" ? 82 : 54} className="h-1.5 bg-white/10" indicatorClassName={proof.status === "pending" ? "bg-amber-300" : "bg-emerald-300"} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid content-start gap-4">
+        <div className="border border-white/12 bg-white/[0.035] p-5" data-testid="evidence-claims">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <p className="font-heading text-xl font-bold text-white">Claims this graph can support</p>
+            <BadgeCheck className="h-5 w-5 text-emerald-100" strokeWidth={1.5} />
+          </div>
+          <div className="space-y-3">
+            {[
+              "A restoration action happened at a specific place and time.",
+              "Biodiversity indicators improved after the intervention.",
+              "Credits are tied to evidence, not raw planting counts.",
+              "Species observations can be audited back to source telemetry.",
+            ].map((claim, index) => (
+              <div key={claim} className="grid grid-cols-[34px_1fr] gap-3 border border-white/12 bg-black/25 p-3">
+                <span className="flex h-8 w-8 items-center justify-center border border-emerald-200/35 bg-emerald-300/10 font-mono text-xs text-emerald-100">{index + 1}</span>
+                <p className="text-sm leading-6 text-white/64">{claim}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border border-white/12 bg-[#080704] p-5" data-testid="evidence-risk-controls">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <p className="font-heading text-xl font-bold text-white">Integrity controls</p>
+            <TriangleAlert className="h-5 w-5 text-amber-200" strokeWidth={1.5} />
+          </div>
+          <div className="space-y-4">
+            {[
+              { label: "additionality check", value: 86 },
+              { label: "double-count guard", value: 94 },
+              { label: "community review", value: 72 },
+              { label: "permanence monitor", value: 81 },
+            ].map((control) => (
+              <div key={control.label}>
+                <div className="mb-2 flex justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.18em] text-white/45">
+                  <span>{control.label}</span>
+                  <span>{control.value}%</span>
+                </div>
+                <Progress value={control.value} className="h-1.5 bg-white/10" indicatorClassName="bg-amber-300" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function PublicDashboard() {
   const [data, setData] = useState(fallbackDashboard);
   const [loading, setLoading] = useState(true);
@@ -1191,7 +1549,7 @@ export default function PublicDashboard() {
               Make planetary restoration feel as live as a launch.
             </h1>
             <p className="mt-6 max-w-3xl text-base leading-7 text-white/65">
-              A public command surface for global rewilding: active drones, monitored zones, biodiversity recovery, and verifiable restoration milestones in one real-time mission feed.
+              A public command surface for global rewilding: autonomous robots across air, land, water, fixed sensors, orbital inputs, and verifiable restoration milestones in one real-time mission feed.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link to="/mission-control" data-testid="gaia-enter-command-link">
@@ -1215,11 +1573,13 @@ export default function PublicDashboard() {
 
         <MissionTicker zones={zones} />
 
+        <RoboticsFleetLayer impact={impact} />
+
         <section className="mx-auto grid max-w-7xl gap-5 px-5 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <EarthHud zones={zones} biodiversity={impact.biodiversity} />
           <div className="grid content-start gap-5">
             <ImpactCounter icon={Globe2} label="Hectares rewilded" value={impact.hectares} tone="text-amber-200" />
-            <ImpactCounter icon={Satellite} label="Active drones" value={impact.drones} tone="text-emerald-200" />
+            <ImpactCounter icon={Bot} label="Autonomous robots" value={impact.drones + 109} tone="text-emerald-200" />
             <div className="border border-white/12 bg-white/[0.035] p-5" data-testid="gaia-biodiversity-index">
               <div className="mb-4 flex items-center justify-between">
                 <span className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -1261,6 +1621,8 @@ export default function PublicDashboard() {
         <BioAcousticAI zones={zones} />
 
         <ProjectPoseidon impact={impact} />
+
+        <GaiaEvidenceGraph impact={impact} />
 
         <section className="mx-auto grid max-w-7xl gap-5 px-5 pb-10 lg:grid-cols-3">
           {[
