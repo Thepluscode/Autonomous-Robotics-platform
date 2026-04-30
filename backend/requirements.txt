@@ -18,7 +18,9 @@ distro==1.9.0
 dnspython==2.8.0
 ecdsa==0.19.1
 email-validator==2.3.0
-emergentintegrations==0.1.0
+# emergentintegrations: NOT on PyPI. This repo ships a local stub at
+# backend/emergentintegrations/llm/chat.py which Python imports directly
+# because backend/ is on sys.path at runtime. Do not re-pin this.
 fastapi==0.110.1
 fastuuid==0.14.0
 filelock==3.25.2
