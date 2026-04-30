@@ -335,38 +335,59 @@ if _MCP_AVAILABLE:
         identification = await _identify_species_from_image(image_url, zone_id)
         return await insert_and_return(db.species_identifications, identification)
 
-    # ==================== AUTH MIDDLEWARE + APP MOUNT ====================
+    # ==================== AUTH WRAPPER + APP MOUNT ====================
+    # Wrap the FastMCP-returned ASGI app with a pure-ASGI auth shim
+    # rather than calling .add_middleware() — newer Starlette ASGI
+    # apps coming out of FastMCP can reject add_middleware after the
+    # app's been instantiated (seen in deploy as "issubclass() arg 1
+    # must be a class"). Wrapping at the ASGI layer skips Starlette's
+    # middleware stack entirely.
 
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
+    class _MCPAuthWrapper:
+        def __init__(self, app):
+            self.app = app
 
-    class _MCPApiKeyAuth(BaseHTTPMiddleware):
-        """Gates every MCP request on `X-MCP-API-Key`. If MCP_API_KEY is
-        unset in the deploy environment, we 503 — better to be loudly
-        broken than silently exposed."""
-        async def dispatch(self, request, call_next):
-            api_key = os.environ.get("MCP_API_KEY", "").strip()
-            if not api_key:
-                return JSONResponse(
-                    {"error": "MCP disabled: MCP_API_KEY not set in deploy environment"},
-                    status_code=503,
-                )
-            sent = request.headers.get("X-MCP-API-Key", "").strip()
-            if sent != api_key:
-                return JSONResponse(
-                    {"error": "missing or invalid X-MCP-API-Key header"}, status_code=401,
-                )
-            return await call_next(request)
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "http":
+                api_key = os.environ.get("MCP_API_KEY", "").strip()
+                if not api_key:
+                    await self._send_json(send, 503, {
+                        "error": "MCP disabled: MCP_API_KEY not set in deploy environment",
+                    })
+                    return
+                headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+                sent = headers.get("x-mcp-api-key", "").strip()
+                if sent != api_key:
+                    await self._send_json(send, 401, {
+                        "error": "missing or invalid X-MCP-API-Key header",
+                    })
+                    return
+            await self.app(scope, receive, send)
+
+        @staticmethod
+        async def _send_json(send, status: int, body: dict):
+            import json as _json
+            payload = _json.dumps(body).encode("utf-8")
+            await send({
+                "type": "http.response.start",
+                "status": status,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode()),
+                ],
+            })
+            await send({"type": "http.response.body", "body": payload})
 
     # Newer FastMCP exposes streamable_http_app(); older versions use sse_app().
+    _inner_app = None
     try:
-        mcp_http_app = mcp.streamable_http_app()
+        _inner_app = mcp.streamable_http_app()
     except AttributeError:
         try:
-            mcp_http_app = mcp.sse_app()
+            _inner_app = mcp.sse_app()
         except AttributeError as exc:
             logger.warning("FastMCP has no HTTP transport method: %s", exc)
-            mcp_http_app = None
+            _inner_app = None
 
-    if mcp_http_app is not None:
-        mcp_http_app.add_middleware(_MCPApiKeyAuth)
+    if _inner_app is not None:
+        mcp_http_app = _MCPAuthWrapper(_inner_app)
