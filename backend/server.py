@@ -746,7 +746,9 @@ async def check_geofence_violations():
             title=f"Geofence Violation: {v['drone_name']}",
             message=f"Drone entered restricted zone: {v['geofence_name']}",
             severity="warning",
-            drone_id=v["drone_id"],
+            drone_id=v["drone_id"],          # legacy
+            asset_id=v["drone_id"],          # multi-domain
+            asset_type="aerial",             # geofence sweep is aerial-only today
             alert_type="geofence"
         )
         alert_doc = alert.model_dump()
@@ -1161,13 +1163,74 @@ async def deploy_drones(request: DeployMissionRequest):
         message=f"{updated_count} drones deployed to {zone['name']} for {request.mission_type}",
         severity="info",
         zone_id=request.zone_id,
+        asset_type="aerial",
         alert_type="drone"
     )
     alert_doc = alert.model_dump()
     alert_doc['created_at'] = alert_doc['created_at'].isoformat()
     await db.alerts.insert_one(alert_doc)
-    
+
     return {"message": f"Deployed {updated_count} drones", "deployed_count": updated_count}
+
+
+@api_router.post("/robots/deploy")
+async def deploy_robots(request: RobotDeployRequest):
+    """Multi-domain deploy. Updates every robot in the request to status
+    `deployed` against the target zone, regardless of domain. Emits one
+    summary alert tagged with the modal asset_type so the audit log
+    correctly attributes ground/aquatic/orbital deployments instead of
+    coercing them through the drone-only path."""
+    zone = await db.zones.find_one({"id": request.zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+
+    updated_count = 0
+    deployed_types: Dict[str, int] = {}
+    for robot_id in request.robot_ids:
+        robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})
+        if not robot:
+            continue
+        rt = robot.get("robot_type", "aerial")
+        result = await db.robots.update_one(
+            {"id": robot_id},
+            {"$set": {
+                "status": "deployed",
+                "zone_id": request.zone_id,
+                "mission_type": request.mission_type,
+                "last_active": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if result.modified_count > 0:
+            updated_count += 1
+            deployed_types[rt] = deployed_types.get(rt, 0) + 1
+
+    # Modal asset_type for the alert — most-deployed domain wins; ties
+    # fall back to "mixed" so audit doesn't silently pick one.
+    if deployed_types:
+        top_count = max(deployed_types.values())
+        modal_types = [t for t, c in deployed_types.items() if c == top_count]
+        modal_asset_type = modal_types[0] if len(modal_types) == 1 else "mixed"
+    else:
+        modal_asset_type = None
+
+    breakdown = ", ".join(f"{n} {t}" for t, n in sorted(deployed_types.items())) or "no robots"
+    alert = Alert(
+        title="Robotics Mission Deployed",
+        message=f"{updated_count} robots deployed to {zone['name']} for {request.mission_type} ({breakdown})",
+        severity="info",
+        zone_id=request.zone_id,
+        asset_type=modal_asset_type,
+        alert_type="robotics",
+    )
+    alert_doc = alert.model_dump()
+    alert_doc["created_at"] = alert_doc["created_at"].isoformat()
+    await db.alerts.insert_one(alert_doc)
+
+    return {
+        "message": f"Deployed {updated_count} robots",
+        "deployed_count": updated_count,
+        "by_type": deployed_types,
+    }
 
 # Mission endpoints
 def _mission_audit_event(action: str, user: dict, detail: str = "") -> dict:
@@ -1981,16 +2044,29 @@ async def get_ai_history():
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats():
     drones = await db.drones.find({}, {"_id": 0}).to_list(1000)
+    robots = await db.robots.find({}, {"_id": 0}).to_list(2000)
     zones = await db.zones.find({}, {"_id": 0}).to_list(1000)
     sensors = await db.sensors.find({}, {"_id": 0}).to_list(1000)
     unread_alerts = await db.alerts.count_documents({"is_read": False})
-    
+
     avg_biodiversity = sum(z.get('biodiversity_index', 0) for z in zones) / max(len(zones), 1)
     avg_soil_health = sum(z.get('soil_health', 0) for z in zones) / max(len(zones), 1)
-    
+
+    # Multi-domain robot stats so the public Gaia Prime story (5 domains)
+    # is backed by actual numbers, not just labels.
+    robots_by_type: Dict[str, int] = {}
+    active_robots = 0
+    for r in robots:
+        robots_by_type[r.get("robot_type", "aerial")] = robots_by_type.get(r.get("robot_type", "aerial"), 0) + 1
+        if r.get("status") in _ROBOT_ACTIVE_STATUSES:
+            active_robots += 1
+
     return DashboardStats(
         total_drones=len(drones),
         active_drones=len([d for d in drones if d.get('status') in ['deployed', 'patrolling']]),
+        total_robots=len(robots),
+        active_robots=active_robots,
+        robots_by_type=robots_by_type,
         total_zones=len(zones),
         critical_zones=len([z for z in zones if z.get('priority') == 'critical']),
         total_sensors=len(sensors),

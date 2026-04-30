@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -199,6 +199,13 @@ class AlertBase(BaseModel):
     message: str
     severity: str = "info"
     zone_id: Optional[str] = None
+    # Multi-domain asset reference. `asset_type` is one of the robot domains
+    # (aerial / ground / aquatic / fixed_sensor / orbital) — alerts can now
+    # carry a non-aerial asset id without coercing it through `drone_id`.
+    asset_id: Optional[str] = None
+    asset_type: Optional[str] = None
+    # Legacy: drone_id is preserved so existing alerts and clients keep
+    # working. New code should set asset_id + asset_type instead.
     drone_id: Optional[str] = None
     alert_type: str = "system"
 
@@ -232,14 +239,27 @@ class AIAnalysisResponse(BaseModel):
 # ==================== DEPLOY / DASHBOARD ====================
 
 class DeployMissionRequest(BaseModel):
+    """Legacy aerial-only deploy request. Prefer RobotDeployRequest for new code."""
     drone_ids: List[str]
     zone_id: str
     mission_type: str
 
 
+class RobotDeployRequest(BaseModel):
+    """Multi-domain deploy request. Robots can be from any of the five
+    domains (aerial / ground / aquatic / fixed_sensor / orbital); the
+    handler validates each id and updates that robot in place."""
+    robot_ids: List[str]
+    zone_id: str
+    mission_type: str
+
+
 class DashboardStats(BaseModel):
-    total_drones: int
-    active_drones: int
+    total_drones: int           # legacy aerial-only count, preserved
+    active_drones: int          # legacy aerial-only count, preserved
+    total_robots: int = 0       # all-domain robot count (includes aerial mirrors)
+    active_robots: int = 0      # robots in deployed/patrolling/mapping/sampling/tasking/active
+    robots_by_type: Dict[str, int] = {}  # {aerial: N, ground: N, aquatic: N, fixed_sensor: N, orbital: N}
     total_zones: int
     critical_zones: int
     total_sensors: int

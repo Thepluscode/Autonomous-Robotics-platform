@@ -91,6 +91,7 @@ def test_dashboard_stats(api, seeded):
     r = api.get("/dashboard/stats")
     assert r.status_code == 200
     stats = r.json()
+    # Legacy aerial-only fields must remain (frontend depends on them).
     for key in (
         "total_drones",
         "active_drones",
@@ -101,6 +102,17 @@ def test_dashboard_stats(api, seeded):
         "avg_soil_health",
     ):
         assert key in stats, f"missing dashboard stat: {key}"
+    # Multi-domain stats — the platform is robotics, not drones.
+    assert "total_robots" in stats and stats["total_robots"] >= stats["total_drones"], (
+        "total_robots should include the aerial mirrors plus the explicit ground/aquatic/sensor/orbital seed"
+    )
+    assert "active_robots" in stats and stats["active_robots"] >= 0
+    assert "robots_by_type" in stats and isinstance(stats["robots_by_type"], dict)
+    # Seed populates all 5 domains; all five should be present after seed.
+    seeded_domains = set(stats["robots_by_type"].keys())
+    assert {"aerial", "ground", "aquatic", "fixed_sensor", "orbital"}.issubset(seeded_domains), (
+        f"seed should populate all 5 domains; got {seeded_domains}"
+    )
 
 
 def test_dashboard_trends(api, seeded):
@@ -167,6 +179,53 @@ def test_drone_feeds_endpoint(api, seeded):
     r = api.get("/drones/feeds")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+def test_robots_deploy_multi_domain(api, seeded, unique_name):
+    """The multi-domain analog of /drones/deploy. Seeds robots across 5
+    domains, deploys two of them (mixed types), and asserts the alert
+    that's emitted carries asset_type instead of being coerced through
+    the drone_id-only path."""
+    robots = api.get("/robots").json()
+    zones = api.get("/zones").json()
+    # Need at least one robot of two different types so we can assert the
+    # `by_type` breakdown and the modal asset_type alert tagging.
+    by_type = {}
+    for r in robots:
+        by_type.setdefault(r.get("robot_type"), []).append(r)
+    types_present = [t for t, rs in by_type.items() if rs]
+    assert len(types_present) >= 2, f"seed should provide multiple robot types; got {types_present}"
+
+    pick = [by_type[types_present[0]][0]["id"], by_type[types_present[1]][0]["id"]]
+    deploy = api.post("/robots/deploy", json={
+        "robot_ids": pick,
+        "zone_id": zones[0]["id"],
+        "mission_type": "multi_domain_smoke",
+    })
+    assert deploy.status_code == 200, deploy.text
+    body = deploy.json()
+    assert body["deployed_count"] == 2
+    assert isinstance(body.get("by_type"), dict) and len(body["by_type"]) >= 1
+
+    # Find the alert this just produced.
+    alerts = api.get("/alerts").json()
+    matching = [a for a in alerts if a.get("alert_type") == "robotics" and a.get("zone_id") == zones[0]["id"]]
+    assert matching, "robots/deploy must emit a robotics alert"
+    latest = matching[0]
+    assert latest.get("asset_type") in {*types_present, "mixed"}, (
+        f"alert.asset_type must reflect the deployed domain(s), got {latest.get('asset_type')}"
+    )
+
+
+def test_robots_deploy_404_on_unknown_zone(api, seeded):
+    robots = api.get("/robots").json()
+    assert robots
+    bad = api.post("/robots/deploy", json={
+        "robot_ids": [robots[0]["id"]],
+        "zone_id": "00000000-0000-4000-8000-000000000000",
+        "mission_type": "test",
+    })
+    assert bad.status_code == 404
 
 
 # --------------------------- Robots ------------------------------------------
