@@ -562,6 +562,273 @@ async def check_interventions():
     
     return {"triggered_count": len(triggered), "interventions": triggered}
 
+
+# ==================== CLOSED-LOOP INTERVENTIONS ====================
+# The verb layer. /interventions/rules + /check above are the trigger
+# system; what follows is direct invocation: "do X on zone Y with robot
+# Z, sign the before/action/after triple, link them in the chain." This
+# is what makes a restoration claim cryptographically defensible —
+# without before, you can't prove the zone was degraded; without action,
+# you can't prove what was done; without after, you can't prove anything
+# changed. All three are signed by the same Ed25519 key as drone
+# telemetry and species identifications.
+
+INTERVENTION_ACTIONS = {
+    "drop_seed_pod": {
+        "label": "Drop seed pod",
+        "params_schema": {
+            "seed_mix_kg": {"type": "number", "min": 0.1, "max": 50.0, "default": 1.0},
+        },
+        # Capped so absurd payloads can't move the index by 100% in one call;
+        # the audit chain stays trustworthy under operator error.
+        "compute_zone_delta": lambda params: {
+            "biodiversity_index": round(min(0.05, max(0.0, 0.002 * float(params.get("seed_mix_kg", 1.0)))), 4),
+            "vegetation_coverage": round(min(0.05, max(0.0, 0.001 * float(params.get("seed_mix_kg", 1.0)))), 4),
+        },
+        "robot_mission_type": "seed_dispersal",
+    },
+    "deploy_predator_deterrent": {
+        "label": "Deploy predator deterrent",
+        "params_schema": {
+            "duration_min": {"type": "number", "min": 5, "max": 240, "default": 60},
+        },
+        "compute_zone_delta": lambda params: {
+            "predator_prey_balance": round(min(0.03, max(0.0, 0.0005 * float(params.get("duration_min", 60)))), 4),
+        },
+        "robot_mission_type": "predator_deterrence",
+    },
+    "deploy_water_sampler": {
+        "label": "Deploy water sampler",
+        "params_schema": {
+            "samples": {"type": "number", "min": 1, "max": 24, "default": 4},
+        },
+        "compute_zone_delta": lambda params: {
+            "soil_health": round(min(0.02, max(0.0, 0.001 * float(params.get("samples", 4)))), 4),
+        },
+        "robot_mission_type": "water_sampling",
+    },
+}
+
+
+def _validate_action_params(action: str, params: dict) -> dict:
+    spec = INTERVENTION_ACTIONS.get(action)
+    if not spec:
+        raise HTTPException(status_code=422, detail=f"unknown action: {action}")
+    schema = spec.get("params_schema", {})
+    out: dict = {}
+    raw = params or {}
+    for name, rule in schema.items():
+        val = raw.get(name, rule.get("default"))
+        if val is None:
+            raise HTTPException(status_code=422, detail=f"missing param: {name}")
+        if rule.get("type") == "number":
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=422, detail=f"param {name} must be a number")
+            lo, hi = rule.get("min"), rule.get("max")
+            if lo is not None and val < lo:
+                raise HTTPException(status_code=422, detail=f"param {name} below min ({lo})")
+            if hi is not None and val > hi:
+                raise HTTPException(status_code=422, detail=f"param {name} above max ({hi})")
+        out[name] = val
+    return out
+
+
+def _zone_state_snapshot(zone: dict) -> dict:
+    return {
+        "biodiversity_index": float(zone.get("biodiversity_index", 0.0)),
+        "soil_health": float(zone.get("soil_health", 0.0)),
+        "predator_prey_balance": float(zone.get("predator_prey_balance", 0.0)),
+        "vegetation_coverage": float(zone.get("vegetation_coverage", 0.0)),
+    }
+
+
+@api_router.get("/interventions/actions")
+async def list_intervention_actions():
+    """Catalog of executable verbs. Frontend / MCP agents introspect
+    this to know what `/interventions/execute` accepts."""
+    return {
+        "actions": [
+            {"action": name, "label": spec["label"], "params_schema": spec["params_schema"]}
+            for name, spec in INTERVENTION_ACTIONS.items()
+        ]
+    }
+
+
+@api_router.post("/interventions/execute")
+async def execute_intervention(req: InterventionExecuteRequest, request: Request):
+    user = await get_current_user(request)
+    spec = INTERVENTION_ACTIONS.get(req.action)
+    if not spec:
+        raise HTTPException(status_code=422, detail=f"unknown action: {req.action}")
+
+    robot = await db.robots.find_one({"id": req.robot_id}, {"_id": 0})
+    if not robot:
+        raise HTTPException(status_code=404, detail="Robot not found")
+
+    zone_id = req.zone_id or robot.get("zone_id")
+    if not zone_id:
+        raise HTTPException(status_code=422, detail="zone_id missing and robot has no assigned zone")
+
+    zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+
+    params = _validate_action_params(req.action, req.params or {})
+
+    intervention_id = str(uuid.uuid4())
+    started = datetime.now(timezone.utc)
+
+    # 1. before-state observation (signed). Captures the zone state the
+    # operator/agent is about to mutate. Without this, "we improved
+    # biodiversity" is unprovable.
+    before_snapshot = _zone_state_snapshot(zone)
+    before_obs = await _record_observation(
+        db,
+        source_type="intervention_before",
+        source_id=intervention_id,
+        zone_id=zone_id,
+        payload={
+            "zone_state": before_snapshot,
+            "robot_id": req.robot_id,
+            "robot_type": robot.get("robot_type"),
+            "action": req.action,
+            "params": params,
+        },
+        observed_at=started.isoformat(),
+    )
+
+    # 2. apply the action — zone state delta + robot status update.
+    delta = spec["compute_zone_delta"](params)
+    zone_updates: dict = {}
+    for field, increment in delta.items():
+        new_val = max(0.0, min(1.0, float(zone.get(field, 0.0)) + float(increment)))
+        zone_updates[field] = new_val
+    if zone_updates:
+        await db.zones.update_one({"id": zone_id}, {"$set": zone_updates})
+
+    new_mission_type = spec.get("robot_mission_type") or req.action
+    await db.robots.update_one(
+        {"id": req.robot_id},
+        {"$set": {
+            "mission_type": new_mission_type,
+            "status": "intervening",
+            "last_active": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    # 3. action observation (signed). The verb itself: who did what,
+    # where, with what parameters, attributed to the operator/agent.
+    action_obs = await _record_observation(
+        db,
+        source_type="intervention_action",
+        source_id=intervention_id,
+        zone_id=zone_id,
+        payload={
+            "action": req.action,
+            "params": params,
+            "robot_id": req.robot_id,
+            "robot_type": robot.get("robot_type"),
+            "actor_user_id": user.get("id"),
+            "actor_user_name": user.get("name") or user.get("email"),
+            "delta_applied": delta,
+            "mission_id": req.mission_id,
+            "notes": req.notes,
+        },
+    )
+
+    # 4. after-state observation (signed). Captures the zone state post-
+    # mutation, including the *observed* delta so an auditor can compare
+    # delta_applied (intent) against delta_observed (effect).
+    updated_zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    after_snapshot = _zone_state_snapshot(updated_zone or zone)
+    delta_observed = {k: round(after_snapshot[k] - before_snapshot[k], 4) for k in after_snapshot}
+    after_obs = await _record_observation(
+        db,
+        source_type="intervention_after",
+        source_id=intervention_id,
+        zone_id=zone_id,
+        payload={
+            "zone_state": after_snapshot,
+            "before_state": before_snapshot,
+            "delta_observed": delta_observed,
+            "robot_id": req.robot_id,
+            "action": req.action,
+        },
+    )
+
+    # 5. persist the intervention record linking the three digests.
+    completed = datetime.now(timezone.utc)
+    intervention_doc = {
+        "id": intervention_id,
+        "action": req.action,
+        "robot_id": req.robot_id,
+        "zone_id": zone_id,
+        "params": params,
+        "mission_id": req.mission_id,
+        "status": "completed",
+        "before_observation_id": before_obs["id"],
+        "before_digest": before_obs["digest"],
+        "action_observation_id": action_obs["id"],
+        "action_digest": action_obs["digest"],
+        "after_observation_id": after_obs["id"],
+        "after_digest": after_obs["digest"],
+        "delta_applied": delta,
+        "delta_observed": delta_observed,
+        "notes": req.notes,
+        "created_by": user.get("id"),
+        "created_by_name": user.get("name") or user.get("email"),
+        "created_at": started.isoformat(),
+        "completed_at": completed.isoformat(),
+    }
+    await db.interventions.insert_one(intervention_doc)
+    intervention_doc.pop("_id", None)
+
+    return intervention_doc
+
+
+@api_router.get("/interventions")
+async def list_interventions(
+    zone_id: Optional[str] = None,
+    robot_id: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = 50,
+):
+    query: dict = {}
+    if zone_id:
+        query["zone_id"] = zone_id
+    if robot_id:
+        query["robot_id"] = robot_id
+    if action:
+        query["action"] = action
+    cap = max(1, min(int(limit or 50), 500))
+    return await db.interventions.find(query, {"_id": 0}).sort("created_at", -1).limit(cap).to_list(cap)
+
+
+@api_router.get("/interventions/{intervention_id}")
+async def get_intervention(intervention_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    """Returns the intervention record plus cryptographic verification
+    of all three linked observations. Auditor flow: GET this → confirm
+    the three observation IDs match the digests → verify each via
+    /api/observations/verify or /.well-known/keys.json."""
+    doc = await db.interventions.find_one({"id": intervention_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Intervention not found")
+    obs_ids = [doc.get("before_observation_id"), doc.get("action_observation_id"), doc.get("after_observation_id")]
+    verifications = []
+    for label, oid in zip(("before", "action", "after"), obs_ids):
+        if not oid:
+            continue
+        o = await db.observations.find_one({"id": oid}, {"_id": 0})
+        if not o:
+            verifications.append({"phase": label, "observation_id": oid, "valid": False, "reason": "observation_missing"})
+            continue
+        ok, reason = verify_observation(o)
+        verifications.append({"phase": label, "observation_id": oid, "valid": ok, "reason": reason, "digest": o.get("digest")})
+    return {**doc, "verifications": verifications}
+
+
 # ==================== FORECASTING ENDPOINTS ====================
 
 @api_router.post("/forecasts/generate/{zone_id}")

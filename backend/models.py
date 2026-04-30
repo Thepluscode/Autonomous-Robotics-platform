@@ -254,6 +254,49 @@ class RobotDeployRequest(BaseModel):
     mission_type: str
 
 
+class InterventionExecuteRequest(BaseModel):
+    """Direct invocation of one of the registered intervention verbs.
+    Differs from /interventions/check (which fires rule-based triggers) —
+    this is "do X to zone Y with robot Z, sign the before/action/after
+    triple, link them in the chain."
+    """
+    action: str
+    robot_id: str
+    zone_id: Optional[str] = None  # if absent, derived from the robot's assigned zone
+    params: dict = {}
+    mission_id: Optional[str] = None
+    notes: str = ""
+
+
+class Intervention(BaseModel):
+    """A completed (or failed) intervention. Links the three signed
+    observations that make the restoration claim defensible — a
+    Verra/Gold Standard auditor walks `before_digest → action_digest
+    → after_digest`, verifies each against `/.well-known/keys.json`,
+    and reads `delta_applied` against the actual zone-state change."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    action: str
+    robot_id: str
+    zone_id: str
+    params: dict = {}
+    mission_id: Optional[str] = None
+    status: str = "queued"  # queued | executing | completed | failed
+    before_observation_id: Optional[str] = None
+    before_digest: Optional[str] = None
+    action_observation_id: Optional[str] = None
+    action_digest: Optional[str] = None
+    after_observation_id: Optional[str] = None
+    after_digest: Optional[str] = None
+    delta_applied: dict = {}
+    error: Optional[str] = None
+    notes: str = ""
+    created_by: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+
+
 class Observation(BaseModel):
     """A signed observation in the verifiable rewilding chain.
 

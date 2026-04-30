@@ -851,6 +851,98 @@ def test_species_identify_writes_signed_observation(api, auth_headers):
     assert "input_hash" in fetched["payload"]
 
 
+def test_intervention_actions_catalog(api):
+    r = api.get("/interventions/actions")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    actions = {a["action"] for a in body["actions"]}
+    assert "drop_seed_pod" in actions
+    for a in body["actions"]:
+        assert a["label"]
+        assert "params_schema" in a
+
+
+def test_drop_seed_pod_writes_signed_before_action_after_triple(api, seeded, auth_headers):
+    """The closed-loop chain. After a seed-pod drop:
+      - the intervention record links three observation IDs
+      - all three observations verify cryptographically
+      - the zone's biodiversity_index actually moved up
+      - the after-state observation references the before-state delta
+    """
+    robots = api.get("/robots").json()
+    aerial = [r for r in robots if r.get("robot_type") == "aerial"]
+    assert aerial, "seed should provide aerial robots"
+    robot = aerial[0]
+    robot_id = robot["id"]
+    zone_id = robot.get("zone_id")
+    if not zone_id:
+        zones = api.get("/zones").json()
+        zone_id = zones[0]["id"]
+        api.put(f"/robots/{robot_id}", json={"zone_id": zone_id})
+
+    before_zone = api.get(f"/zones/{zone_id}").json()
+    before_biodiv = float(before_zone.get("biodiversity_index", 0))
+
+    r = api.post("/interventions/execute", headers=auth_headers, json={
+        "action": "drop_seed_pod",
+        "robot_id": robot_id,
+        "zone_id": zone_id,
+        "params": {"seed_mix_kg": 5.0},
+        "notes": "pytest closed-loop smoke",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "completed"
+    assert body["before_observation_id"] and body["before_digest"]
+    assert body["action_observation_id"] and body["action_digest"]
+    assert body["after_observation_id"] and body["after_digest"]
+    assert body["delta_applied"]["biodiversity_index"] > 0
+
+    # Zone state actually moved.
+    after_zone = api.get(f"/zones/{zone_id}").json()
+    assert float(after_zone["biodiversity_index"]) > before_biodiv
+
+    # /interventions/{id} returns cryptographic verification of all three.
+    detail = api.get(f"/interventions/{body['id']}").json()
+    verifs = detail["verifications"]
+    assert len(verifs) == 3
+    phases = {v["phase"] for v in verifs}
+    assert phases == {"before", "action", "after"}
+    for v in verifs:
+        assert v["valid"] is True, f"phase={v['phase']} reason={v['reason']}"
+
+
+def test_intervention_unknown_action_returns_422(api, auth_headers):
+    r = api.post("/interventions/execute", headers=auth_headers, json={
+        "action": "summon_dragon",
+        "robot_id": "00000000-0000-4000-8000-000000000000",
+        "zone_id": "00000000-0000-4000-8000-000000000000",
+    })
+    assert r.status_code == 422
+
+
+def test_intervention_unknown_robot_returns_404(api, seeded, auth_headers):
+    zones = api.get("/zones").json()
+    r = api.post("/interventions/execute", headers=auth_headers, json={
+        "action": "drop_seed_pod",
+        "robot_id": "00000000-0000-4000-8000-000000000000",
+        "zone_id": zones[0]["id"],
+    })
+    assert r.status_code == 404
+
+
+def test_intervention_param_out_of_range_returns_422(api, seeded, auth_headers):
+    robots = api.get("/robots").json()
+    zones = api.get("/zones").json()
+    r = api.post("/interventions/execute", headers=auth_headers, json={
+        "action": "drop_seed_pod",
+        "robot_id": robots[0]["id"],
+        "zone_id": zones[0]["id"],
+        "params": {"seed_mix_kg": 9999},  # above 50.0 cap
+    })
+    assert r.status_code == 422
+
+
 def test_species_identifiers_endpoint(api):
     r = api.get("/species/identifiers")
     assert r.status_code == 200, r.text
