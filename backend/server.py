@@ -573,6 +573,11 @@ async def check_interventions():
 # changed. All three are signed by the same Ed25519 key as drone
 # telemetry and species identifications.
 
+# UUID pattern. Defined locally because the global _UUID_ID_PATTERN
+# is registered later in the file (after the robot block) and the
+# closed-loop intervention routes need the constraint at import time.
+_INTERVENTION_ID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
 INTERVENTION_ACTIONS = {
     "drop_seed_pod": {
         "label": "Drop seed pod",
@@ -807,7 +812,7 @@ async def list_interventions(
 
 
 @api_router.get("/interventions/{intervention_id}")
-async def get_intervention(intervention_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+async def get_intervention(intervention_id: str = Path(..., pattern=_INTERVENTION_ID_PATTERN)):
     """Returns the intervention record plus cryptographic verification
     of all three linked observations. Auditor flow: GET this → confirm
     the three observation IDs match the digests → verify each via
