@@ -917,6 +917,106 @@ async def get_public_dashboard():
         "last_updated": datetime.now(timezone.utc).isoformat()
     }
 
+# ==================== ROBOTICS ASSET ENDPOINTS ====================
+
+_UUID_ID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+ROBOT_TYPES = {"aerial", "ground", "aquatic", "fixed_sensor", "orbital"}
+
+
+def _normalize_robot_type(robot_type: str) -> str:
+    normalized = (robot_type or "").strip().lower()
+    if normalized not in ROBOT_TYPES:
+        raise HTTPException(status_code=422, detail=f"robot_type must be one of: {', '.join(sorted(ROBOT_TYPES))}")
+    return normalized
+
+
+def _deserialize_robot(robot: dict) -> dict:
+    deserialize_datetime(robot, ["created_at", "last_active"])
+    return robot
+
+
+@api_router.get("/robots", response_model=List[Robot])
+async def get_robots(robot_type: Optional[str] = None, status: Optional[str] = None):
+    query = {}
+    if robot_type:
+        query["robot_type"] = _normalize_robot_type(robot_type)
+    if status:
+        query["status"] = status
+
+    robots = await db.robots.find(query, {"_id": 0}).to_list(1000)
+    return [_deserialize_robot(robot) for robot in robots]
+
+
+@api_router.get("/robots/{robot_id}", response_model=Robot)
+async def get_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})
+    if not robot:
+        raise HTTPException(status_code=404, detail="Robot not found")
+    return _deserialize_robot(robot)
+
+
+@api_router.post("/robots", response_model=Robot)
+async def create_robot(robot_data: RobotCreate):
+    data = robot_data.model_dump()
+    data["robot_type"] = _normalize_robot_type(data.get("robot_type", "aerial"))
+    robot = Robot(**data)
+    doc = robot.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["last_active"] = doc["last_active"].isoformat()
+    await db.robots.insert_one(doc)
+    return robot
+
+
+@api_router.put("/robots/{robot_id}", response_model=Robot)
+async def update_robot(update_data: RobotUpdate, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    if not update_dict:
+        raise HTTPException(status_code=400, detail="No update data provided")
+    if "robot_type" in update_dict:
+        update_dict["robot_type"] = _normalize_robot_type(update_dict["robot_type"])
+    update_dict["last_active"] = datetime.now(timezone.utc).isoformat()
+
+    await db.robots.update_one({"id": robot_id}, {"$set": update_dict})
+    robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})
+    if not robot:
+        raise HTTPException(status_code=404, detail="Robot not found")
+    return _deserialize_robot(robot)
+
+
+@api_router.delete("/robots/{robot_id}")
+async def delete_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    result = await db.robots.delete_one({"id": robot_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Robot not found")
+    return {"message": "Robot deleted successfully"}
+
+
+@api_router.post("/robots/{robot_id}/task", response_model=Robot)
+async def task_robot(task: RobotTaskRequest, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+    if task.zone_id:
+        zone = await db.zones.find_one({"id": task.zone_id}, {"_id": 0})
+        if not zone:
+            raise HTTPException(status_code=404, detail="Zone not found")
+
+    update = {
+        "zone_id": task.zone_id,
+        "mission_type": task.mission_type,
+        "status": task.status,
+        "last_active": datetime.now(timezone.utc).isoformat(),
+        "metadata.last_task_notes": task.notes,
+    }
+    await db.robots.update_one({"id": robot_id}, {"$set": update})
+    robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})
+    if not robot:
+        raise HTTPException(status_code=404, detail="Robot not found")
+    await manager.broadcast({
+        "type": "robot_tasked",
+        "robot": robot,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    return _deserialize_robot(robot)
+
+
 # ==================== EXISTING ENDPOINTS (PRESERVED) ====================
 
 @api_router.get("/drones", response_model=List[Drone])
@@ -955,7 +1055,7 @@ async def get_drone_camera_feeds():
 
 # UUID regex on drone_id guarantees `/drones/feeds` (literal) can never be
 # matched as a drone_id, even if route registration order is shuffled.
-_DRONE_ID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+_DRONE_ID_PATTERN = _UUID_ID_PATTERN
 
 @api_router.get("/drones/{drone_id}", response_model=Drone)
 async def get_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
@@ -1979,7 +2079,7 @@ async def get_notification_history():
 @api_router.post("/seed")
 async def seed_data(user: dict = Depends(require_role(["admin"]))):
     # Clear and reseed
-    for collection in ['drones', 'zones', 'sensors', 'alerts']:
+    for collection in ['drones', 'robots', 'zones', 'sensors', 'alerts']:
         await db[collection].delete_many({})
     
     zones = [
@@ -1995,6 +2095,16 @@ async def seed_data(user: dict = Depends(require_role(["admin"]))):
         doc['created_at'] = doc['created_at'].isoformat()
         await db.zones.insert_one(doc)
     
+    seeded_robot_count = 0
+
+    async def _insert_seed_robot(robot: Robot):
+        nonlocal seeded_robot_count
+        doc = robot.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['last_active'] = doc['last_active'].isoformat()
+        await db.robots.insert_one(doc)
+        seeded_robot_count += 1
+
     for i in range(12):
         zone = random.choice(zones)
         drone = Drone(
@@ -2009,8 +2119,57 @@ async def seed_data(user: dict = Depends(require_role(["admin"]))):
         doc['created_at'] = doc['created_at'].isoformat()
         doc['last_active'] = doc['last_active'].isoformat()
         await db.drones.insert_one(doc)
+        await _insert_seed_robot(Robot(
+            name=drone.name,
+            robot_type="aerial",
+            zone_id=drone.zone_id,
+            status=drone.status,
+            battery=drone.battery,
+            health=max(45, min(100, drone.battery * 0.72 + 22)),
+            autonomy_level=0.86,
+            maintenance_state="charging_required" if drone.battery < 30 else "nominal",
+            latitude=drone.latitude,
+            longitude=drone.longitude,
+            altitude=drone.altitude,
+            mission_type=drone.mission_type,
+            capabilities=["aerial_survey", "seed_dispersal", "overwatch"],
+            metadata={"compat_drone_id": drone.id},
+        ))
+
+    robot_specs = [
+        ("Soil Rover 11", "ground", zones[0], "sampling", 82, 91, 0.74, ["soil_sampling", "trail_mapping", "payload_delivery"]),
+        ("Ranger Mule 18", "ground", zones[1], "standby", 76, 88, 0.72, ["ranger_support", "payload_delivery"]),
+        ("Trail Scout 23", "ground", zones[2], "mapping", 69, 84, 0.76, ["trail_inspection", "thermal_scan"]),
+        ("Coral Medic", "aquatic", zones[3], "restoring", 91, 90, 0.81, ["coral_repair", "reef_mapping"]),
+        ("Kelp Sower", "aquatic", zones[3], "seeding", 86, 87, 0.79, ["kelp_seeding", "carbon_monitoring"]),
+        ("Net Cutter", "aquatic", zones[3], "intercept", 74, 79, 0.77, ["ghost_net_removal", "acoustic_relay"]),
+        ("Acoustic Buoy 44", "fixed_sensor", zones[0], "listening", 96, 93, 0.68, ["bioacoustics", "edge_inference"]),
+        ("Soil Probe C-12", "fixed_sensor", zones[4], "calibrating", 88, 81, 0.64, ["soil_carbon", "moisture_sensing"]),
+        ("Camera Trap 09", "fixed_sensor", zones[1], "detecting", 72, 86, 0.70, ["camera_trap", "species_detection"]),
+        ("Verdant Polar", "orbital", zones[0], "sweeping", 98, 98, 0.92, ["hyperspectral", "wide_area_detection"]),
+        ("Verdant SWIR", "orbital", zones[0], "tasking", 94, 94, 0.91, ["swir_scan", "canopy_water_detection"]),
+        ("Verdant Thermal", "orbital", zones[3], "queued", 91, 91, 0.89, ["thermal_scan", "reef_heat_stress"]),
+    ]
+    for name, robot_type, zone, status, battery, health, autonomy, capabilities in robot_specs:
+        await _insert_seed_robot(Robot(
+            name=name,
+            robot_type=robot_type,
+            zone_id=zone.id,
+            status=status,
+            battery=battery,
+            health=health,
+            autonomy_level=autonomy,
+            maintenance_state="nominal" if health >= 80 else "inspection_due",
+            latitude=zone.center_lat + random.uniform(-0.2, 0.2),
+            longitude=zone.center_lng + random.uniform(-0.2, 0.2),
+            depth_m=random.choice([22, 38, 61]) if robot_type == "aquatic" else None,
+            altitude=random.choice([500000, 550000, 620000]) if robot_type == "orbital" else None,
+            mission_type=status,
+            capabilities=capabilities,
+            metadata={"domain": robot_type, "seeded": True},
+        ))
     
-    return {"message": "Seed data created", "zones": len(zones), "drones": 12}
+    return {"message": "Seed data created", "zones": len(zones), "drones": 12, "robots": seeded_robot_count}
 
 @api_router.post("/_internal/drone-tick", include_in_schema=False)
 async def drone_tick(user: dict = Depends(require_role(["admin"]))):

@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../co
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Progress } from "../components/ui/progress";
-import { droneAPI, zoneAPI } from "../lib/api";
+import { droneAPI, robotAPI, zoneAPI } from "../lib/api";
 import { cn } from "../lib/utils";
 import {
   Activity,
@@ -134,23 +134,55 @@ function buildAerialAssets(drones, zones) {
   }));
 }
 
+function robotDomainId(robotType) {
+  return robotType === "fixed_sensor" ? "fixed" : robotType;
+}
+
+function robotToAsset(robot, zones) {
+  return {
+    id: robot.id,
+    name: robot.name || "Autonomous Asset",
+    status: robot.status || "unknown",
+    battery: Math.round(robot.battery ?? 0),
+    zone: zones.find((zone) => zone.id === robot.zone_id)?.name || robot.zone_id || "Unassigned",
+    health: Math.round(robot.health ?? 0),
+  };
+}
+
+function buildRobotAssets(robots, drones, zones) {
+  const grouped = roboticsDomains.reduce((acc, domain) => ({ ...acc, [domain.id]: [] }), {});
+  robots.forEach((robot) => {
+    const domainId = robotDomainId(robot.robot_type);
+    if (grouped[domainId]) grouped[domainId].push(robotToAsset(robot, zones));
+  });
+
+  if (!grouped.aerial.length) grouped.aerial = buildAerialAssets(drones, zones);
+  Object.entries(simulatedAssets).forEach(([domainId, fallbackAssets]) => {
+    if (!grouped[domainId]?.length) grouped[domainId] = fallbackAssets;
+  });
+  return grouped;
+}
+
 export default function RoboticsCommandCenter() {
   const [drones, setDrones] = useState([]);
+  const [robots, setRobots] = useState([]);
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeDomain, setActiveDomain] = useState("aerial");
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([droneAPI.getAll(), zoneAPI.getAll()])
-      .then(([droneRes, zoneRes]) => {
+    Promise.all([droneAPI.getAll(), robotAPI.getAll(), zoneAPI.getAll()])
+      .then(([droneRes, robotRes, zoneRes]) => {
         if (cancelled) return;
         setDrones(droneRes.data || []);
+        setRobots(robotRes.data || []);
         setZones(zoneRes.data || []);
       })
       .catch(() => {
         if (!cancelled) {
           setDrones([]);
+          setRobots([]);
           setZones([]);
         }
       })
@@ -163,11 +195,7 @@ export default function RoboticsCommandCenter() {
     };
   }, []);
 
-  const aerialAssets = useMemo(() => buildAerialAssets(drones, zones), [drones, zones]);
-  const assetsByDomain = useMemo(() => ({
-    aerial: aerialAssets,
-    ...simulatedAssets,
-  }), [aerialAssets]);
+  const assetsByDomain = useMemo(() => buildRobotAssets(robots, drones, zones), [robots, drones, zones]);
 
   const domain = roboticsDomains.find((item) => item.id === activeDomain) || roboticsDomains[0];
   const assets = assetsByDomain[domain.id] || [];

@@ -83,6 +83,60 @@ class DroneUpdate(BaseModel):
     mission_type: Optional[str] = None
 
 
+class RobotBase(BaseModel):
+    name: str
+    robot_type: str = "aerial"  # aerial, ground, aquatic, fixed_sensor, orbital
+    zone_id: Optional[str] = None
+    status: str = "idle"
+    battery: float = 100
+    health: float = 100
+    autonomy_level: float = 0.75
+    maintenance_state: str = "nominal"
+    latitude: float = 0.0
+    longitude: float = 0.0
+    altitude: Optional[float] = None
+    depth_m: Optional[float] = None
+    mission_type: Optional[str] = None
+    capabilities: List[str] = []
+    metadata: dict = {}
+
+
+class Robot(RobotBase):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_active: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RobotCreate(RobotBase):
+    pass
+
+
+class RobotUpdate(BaseModel):
+    name: Optional[str] = None
+    robot_type: Optional[str] = None
+    zone_id: Optional[str] = None
+    status: Optional[str] = None
+    battery: Optional[float] = None
+    health: Optional[float] = None
+    autonomy_level: Optional[float] = None
+    maintenance_state: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    altitude: Optional[float] = None
+    depth_m: Optional[float] = None
+    mission_type: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+    metadata: Optional[dict] = None
+
+
+class RobotTaskRequest(BaseModel):
+    zone_id: Optional[str] = None
+    mission_type: str = "monitoring"
+    status: str = "assigned"
+    notes: str = ""
+
+
 class ZoneBase(BaseModel):
     name: str
     description: Optional[str] = None

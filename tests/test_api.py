@@ -27,6 +27,7 @@ def test_seed_populates_data(api, auth_headers):
     body = r.json()
     assert body.get("zones", 0) > 0
     assert body.get("drones", 0) > 0
+    assert body.get("robots", 0) > 0
 
 
 def test_seed_rejects_unauthenticated(api):
@@ -166,6 +167,53 @@ def test_drone_feeds_endpoint(api, seeded):
     r = api.get("/drones/feeds")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+# --------------------------- Robots ------------------------------------------
+
+def test_robots_full_crud_and_task(api, seeded, unique_name):
+    zones = api.get("/zones").json()
+    assert zones, "seed should provide zones"
+
+    payload = {
+        "name": unique_name,
+        "robot_type": "ground",
+        "status": "idle",
+        "battery": 88,
+        "health": 91,
+        "autonomy_level": 0.76,
+        "capabilities": ["soil_sampling", "payload_delivery"],
+    }
+    created = api.post("/robots", json=payload)
+    assert created.status_code == 200, created.text
+    robot = created.json()
+    robot_id = robot["id"]
+    assert robot["robot_type"] == "ground"
+
+    listed = api.get("/robots?robot_type=ground")
+    assert listed.status_code == 200
+    assert any(r["id"] == robot_id for r in listed.json())
+
+    updated = api.put(f"/robots/{robot_id}", json={"status": "mapping", "battery": 81})
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "mapping"
+
+    tasked = api.post(
+        f"/robots/{robot_id}/task",
+        json={"zone_id": zones[0]["id"], "mission_type": "soil_sampling", "status": "assigned", "notes": "pytest task"},
+    )
+    assert tasked.status_code == 200, tasked.text
+    assert tasked.json()["zone_id"] == zones[0]["id"]
+    assert tasked.json()["mission_type"] == "soil_sampling"
+
+    deleted = api.delete(f"/robots/{robot_id}")
+    assert deleted.status_code == 200
+    assert api.get(f"/robots/{robot_id}").status_code == 404
+
+
+def test_robots_reject_invalid_type(api, unique_name):
+    created = api.post("/robots", json={"name": unique_name, "robot_type": "dragon"})
+    assert created.status_code == 422
 
 
 # --------------------------- Zones --------------------------------------------

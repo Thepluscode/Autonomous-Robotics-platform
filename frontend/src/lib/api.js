@@ -89,6 +89,16 @@ export const droneAPI = {
   getFeeds: () => api.get("/drones/feeds"),
 };
 
+// ======================== ROBOTS ========================
+export const robotAPI = {
+  getAll: (params = {}) => api.get("/robots", { params }),
+  getOne: (id) => api.get(`/robots/${id}`),
+  create: (data) => api.post("/robots", data),
+  update: (id, data) => api.put(`/robots/${id}`, data),
+  delete: (id) => api.delete(`/robots/${id}`),
+  task: (id, data) => api.post(`/robots/${id}/task`, data),
+};
+
 // ======================== MISSIONS ========================
 export const missionAPI = {
   generate: (data) => api.post("/missions/generate", data),
