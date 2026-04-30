@@ -259,13 +259,14 @@ class MissionReadinessCheck(BaseModel):
 class MissionGenerateRequest(BaseModel):
     """Minimal input the operator (or an AI agent) sends to ask for a plan.
 
-    Everything else on `MissionCreate` (drones, readiness, risk, timeline,
+    Everything else on `MissionCreate` (robots, drones, readiness, risk, timeline,
     directives, counterfactual evidence) is computed server-side by the
     planner. This is the moonshot wedge: the *plan* is the product, not the
     UI of clicking through a wizard.
     """
     zone_id: Optional[str] = None  # if absent, planner picks the highest-leverage zone
     mission_type: str = "patrol"   # patrol | inspect | intervene
+    max_robots: int = 0            # primary robotics cap; 0 preserves legacy max_drones-only requests
     max_drones: int = 3            # planner won't assign more than this; may assign fewer
     notes: str = ""                # free-text context the operator wants surfaced in the audit trail
 
@@ -280,6 +281,7 @@ class MissionCreate(BaseModel):
     zone_id: str
     zone_name: str
     mission_type: str
+    robot_ids: List[str] = []
     drone_ids: List[str] = []
     sensor_ids: List[str] = []
     geofence_ids: List[str] = []

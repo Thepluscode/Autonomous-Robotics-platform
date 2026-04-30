@@ -1258,10 +1258,80 @@ def _counterfactual_trajectories(
     }
 
 
+MISSION_MOBILE_ROBOT_TYPES = {"aerial", "ground", "aquatic"}
+MISSION_EVIDENCE_ROBOT_TYPES = {"fixed_sensor", "orbital"}
+MISSION_ROBOT_READY_STATUSES = {"idle", "standby", "charging", "queued"}
+
+
+def _mission_robot_priority(mission_type: str, zone: dict) -> Dict[str, int]:
+    mission = (mission_type or "").lower()
+    zone_type = (zone.get("zone_type") or "").lower()
+    priority = {"aerial": 3, "ground": 2, "aquatic": 1, "fixed_sensor": 1, "orbital": 1}
+    if mission in {"inspect", "patrol", "survey"}:
+        priority.update({"aerial": 4, "ground": 3, "orbital": 2, "fixed_sensor": 2})
+    if mission in {"intervene", "restore", "reforest", "seed"}:
+        priority.update({"ground": 4, "aerial": 4, "aquatic": 2})
+    if mission in {"soil", "sample", "ranger"} or zone_type in {"forest", "grassland", "desert"}:
+        priority["ground"] += 2
+    if mission in {"reef", "kelp", "aquatic", "marine"} or zone_type in {"coastal", "reef", "wetland", "marine"}:
+        priority["aquatic"] += 4
+        priority["orbital"] += 1
+    return priority
+
+
+def _robot_rejection_reason(robot: dict) -> Optional[str]:
+    if robot.get("robot_type") in MISSION_EVIDENCE_ROBOT_TYPES:
+        return None
+    if robot.get("status") not in MISSION_ROBOT_READY_STATUSES:
+        return f"status={robot.get('status')}"
+    if float(robot.get("battery", 0)) < 50:
+        return f"battery={robot.get('battery')}<50"
+    if float(robot.get("health", 0)) < 60:
+        return f"health={robot.get('health')}<60"
+    return None
+
+
+def _select_mission_robots(all_robots: List[dict], zone: dict, mission_type: str, max_robots: int) -> tuple[List[dict], List[dict], List[dict]]:
+    priority = _mission_robot_priority(mission_type, zone)
+    rejected: List[dict] = []
+    candidates: List[dict] = []
+    evidence_sources: List[dict] = []
+    zone_id = zone.get("id")
+
+    for robot in all_robots:
+        robot_type = robot.get("robot_type", "aerial")
+        zone_match = robot.get("zone_id") in {None, zone_id} or robot_type == "orbital"
+        reason = _robot_rejection_reason(robot)
+        if reason:
+            rejected.append({"id": robot["id"], "name": robot.get("name"), "robot_type": robot_type, "reason": reason})
+            continue
+        if robot_type in MISSION_EVIDENCE_ROBOT_TYPES:
+            if zone_match and len(evidence_sources) < 3:
+                evidence_sources.append(robot)
+            continue
+        if robot_type not in MISSION_MOBILE_ROBOT_TYPES:
+            rejected.append({"id": robot["id"], "name": robot.get("name"), "robot_type": robot_type, "reason": "unsupported robot_type"})
+            continue
+        if not zone_match:
+            rejected.append({"id": robot["id"], "name": robot.get("name"), "robot_type": robot_type, "reason": "assigned to another zone"})
+            continue
+        candidates.append(robot)
+
+    candidates.sort(key=lambda r: (
+        -priority.get(r.get("robot_type", "aerial"), 0),
+        -float(r.get("battery", 0)),
+        -float(r.get("health", 0)),
+    ))
+    selected = candidates[:max(0, max_robots)]
+    for robot in candidates[len(selected):]:
+        rejected.append({"id": robot["id"], "name": robot.get("name"), "robot_type": robot.get("robot_type"), "reason": "robotics cap reached"})
+    return selected, evidence_sources, rejected
+
+
 async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
     """Server-side mission planner.
 
-    Picks the zone (auto if not given), scores available drones, computes
+    Picks the zone (auto if not given), scores available robots/drones, computes
     readiness checks that can actually abort the launch, and packages a
     counterfactual `evidence` block so operators can see what the system
     expects to *change* by deploying. Returns a dict that satisfies
@@ -1288,29 +1358,40 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
         zone.get("priority", "medium"), 0.6
     )
 
+    all_robots = await db.robots.find({}, {"_id": 0}).to_list(1000)
+    requested_robot_cap = max(0, int(getattr(req, "max_robots", 0) or getattr(req, "max_drones", 0) or 0))
+    selected_robots, evidence_robots, rejected_robots = _select_mission_robots(
+        all_robots,
+        zone,
+        req.mission_type,
+        requested_robot_cap,
+    )
+
     all_drones = await db.drones.find({}, {"_id": 0}).to_list(500)
-    selected: List[dict] = []
-    rejected: List[dict] = []
+    selected_drones: List[dict] = []
+    rejected_drones: List[dict] = []
     for d in sorted(all_drones, key=lambda x: -float(x.get("battery", 0))):
         if d.get("status") not in {"idle", "charging"}:
-            rejected.append({"id": d["id"], "name": d.get("name"), "reason": f"status={d.get('status')}"})
+            rejected_drones.append({"id": d["id"], "name": d.get("name"), "reason": f"status={d.get('status')}"})
             continue
         if float(d.get("battery", 0)) < 50:
-            rejected.append({"id": d["id"], "name": d.get("name"), "reason": f"battery={d.get('battery')}<50"})
+            rejected_drones.append({"id": d["id"], "name": d.get("name"), "reason": f"battery={d.get('battery')}<50"})
             continue
-        if len(selected) < req.max_drones:
-            selected.append(d)
+        if len(selected_drones) < req.max_drones:
+            selected_drones.append(d)
         else:
-            rejected.append({"id": d["id"], "name": d.get("name"), "reason": "fleet cap reached"})
+            rejected_drones.append({"id": d["id"], "name": d.get("name"), "reason": "fleet cap reached"})
 
     geofence_docs = await db.geofences.find({"zone_id": zone["id"]}, {"_id": 0}).to_list(50)
     active_in_zone = await db.missions.count_documents(
         {"zone_id": zone["id"], "status": {"$in": ["authorized", "active"]}}
     )
 
-    avg_battery = sum(float(d.get("battery", 0)) for d in selected) / max(1, len(selected))
+    assigned_mobile_assets = selected_robots or selected_drones
+    avg_battery = sum(float(asset.get("battery", 0)) for asset in assigned_mobile_assets) / max(1, len(assigned_mobile_assets))
     readiness = [
-        {"label": "drones_available", "value": min(1.0, len(selected) / max(1, req.max_drones))},
+        {"label": "robots_available", "value": min(1.0, len(selected_robots) / max(1, requested_robot_cap))},
+        {"label": "drones_available", "value": min(1.0, len(selected_drones) / max(1, req.max_drones))},
         {"label": "battery_avg", "value": min(1.0, avg_battery / 100.0)},
         {"label": "geofence_clear", "value": 1.0 if not geofence_docs else 0.7},
         {"label": "no_conflicting_mission", "value": 0.0 if active_in_zone else 1.0},
@@ -1318,8 +1399,8 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
         # the slot so the UI doesn't have to know it's missing.
         {"label": "weather_clear", "value": 0.85},
     ]
-    weights = {"drones_available": 0.35, "battery_avg": 0.20, "geofence_clear": 0.10,
-               "no_conflicting_mission": 0.20, "weather_clear": 0.15}
+    weights = {"robots_available": 0.25, "drones_available": 0.10, "battery_avg": 0.20,
+               "geofence_clear": 0.10, "no_conflicting_mission": 0.20, "weather_clear": 0.15}
     go_score = sum(c["value"] * weights[c["label"]] for c in readiness)
 
     risk_score = round(min(1.0, (1 - biodiversity) * priority_weight + 0.1), 3)
@@ -1340,15 +1421,25 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
             "trajectories": trajectories,
             "method": trajectories["method"],
         },
-        "rejected_drones": rejected,
+        "selected_robots": [
+            {"id": r.get("id"), "name": r.get("name"), "robot_type": r.get("robot_type"), "battery": r.get("battery"), "health": r.get("health")}
+            for r in selected_robots
+        ],
+        "evidence_sources": [
+            {"id": r.get("id"), "name": r.get("name"), "robot_type": r.get("robot_type"), "capabilities": r.get("capabilities", [])}
+            for r in evidence_robots
+        ],
+        "rejected_robots": rejected_robots,
+        "rejected_drones": rejected_drones,
         "active_geofences": [g.get("id") for g in geofence_docs],
         "operator_notes": req.notes,
     }
 
-    coverage_km = round(zone.get("radius_km", 5.0) * 2 * len(selected), 2)
-    duration = 30 + 10 * len(selected) + (15 if req.mission_type == "inspect" else 0)
+    mobile_count = len(assigned_mobile_assets)
+    coverage_km = round(zone.get("radius_km", 5.0) * 2 * max(1, mobile_count), 2)
+    duration = 30 + 10 * mobile_count + (15 if req.mission_type == "inspect" else 0)
     timeline = [
-        f"T-30m  pre-flight checks ({len(selected)} drones)",
+        f"T-30m  robot readiness checks ({len(selected_robots)} robots, {len(selected_drones)} legacy drones)",
         f"T-15m  weather + geofence sweep",
         f"T-0    launch sequence — {zone.get('name')}",
         f"T+{duration//2}m  mid-mission telemetry checkpoint",
@@ -1357,7 +1448,7 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
     directives = [
         f"Maintain altitude 60-80m; respect {len(geofence_docs)} active geofence(s)",
         "Photograph any anomaly with confidence > 0.7 and emit alert",
-        "Abort and RTB if any drone battery < 25% mid-mission",
+        "Abort and RTB if any mobile robot battery < 25% mid-mission",
     ]
     if req.mission_type == "intervene":
         directives.append("Drop seed pod at zone center (subject to GO confirmation)")
@@ -1367,7 +1458,8 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
         "zone_id": zone["id"],
         "zone_name": zone.get("name", ""),
         "mission_type": req.mission_type,
-        "drone_ids": [d["id"] for d in selected],
+        "robot_ids": [r["id"] for r in selected_robots],
+        "drone_ids": [d["id"] for d in selected_drones],
         "sensor_ids": [],
         "geofence_ids": [g["id"] for g in geofence_docs],
         "risk_score": risk_score,
@@ -1386,9 +1478,22 @@ async def _validate_mission_can_authorize(mission: dict):
         raise HTTPException(status_code=400, detail=f"Mission cannot be authorized from {mission.get('status')} status")
     if float(mission.get("go_score", 0)) < MISSION_GO_SCORE_FLOOR:
         raise HTTPException(status_code=400, detail="Mission GO score is below launch floor")
+    robot_ids = mission.get("robot_ids", [])
+    if robot_ids:
+        valid_robots = await db.robots.find({
+            "id": {"$in": robot_ids},
+            "robot_type": {"$in": list(MISSION_MOBILE_ROBOT_TYPES)},
+            "status": {"$in": list(MISSION_ROBOT_READY_STATUSES)},
+            "battery": {"$gte": 50},
+            "health": {"$gte": 60},
+        }, {"_id": 0}).to_list(len(robot_ids))
+        if len(valid_robots) != len(robot_ids):
+            raise HTTPException(status_code=400, detail="Mission has invalid or unavailable robot assignments")
+        return
+
     drone_ids = mission.get("drone_ids", [])
     if not drone_ids:
-        raise HTTPException(status_code=400, detail="Mission has no assigned drones")
+        raise HTTPException(status_code=400, detail="Mission has no assigned robots or drones")
     valid_drones = await db.drones.find({
         "id": {"$in": drone_ids},
         "status": {"$in": ["idle", "charging"]},
@@ -1404,6 +1509,22 @@ async def _deploy_mission_assets(mission: dict) -> dict:
         raise HTTPException(status_code=404, detail="Mission zone not found")
 
     updated_count = 0
+    updated_robot_count = 0
+    for robot_id in mission.get("robot_ids", []):
+        result = await db.robots.update_one(
+            {"id": robot_id},
+            {"$set": {
+                "status": "deployed",
+                "zone_id": mission["zone_id"],
+                "mission_type": mission["mission_type"],
+                "last_active": datetime.now(timezone.utc).isoformat(),
+                "metadata.active_mission_id": mission.get("id"),
+            }}
+        )
+        if result.modified_count > 0:
+            updated_robot_count += 1
+
+    updated_drone_count = 0
     for drone_id in mission.get("drone_ids", []):
         result = await db.drones.update_one(
             {"id": drone_id},
@@ -1415,11 +1536,13 @@ async def _deploy_mission_assets(mission: dict) -> dict:
             }}
         )
         if result.modified_count > 0:
-            updated_count += 1
+            updated_drone_count += 1
+
+    updated_count = updated_robot_count + updated_drone_count
 
     alert = Alert(
         title="Mission Authorized",
-        message=f"{updated_count} drones deployed to {zone['name']} for {mission['mission_type']}",
+        message=f"{updated_count} robots deployed to {zone['name']} for {mission['mission_type']}",
         severity="info",
         zone_id=mission["zone_id"],
         alert_type="mission",
@@ -1428,18 +1551,42 @@ async def _deploy_mission_assets(mission: dict) -> dict:
     alert_doc["created_at"] = alert_doc["created_at"].isoformat()
     await db.alerts.insert_one(alert_doc)
 
-    return {"message": f"Mission active with {updated_count} drones deployed", "deployed_count": updated_count}
+    return {
+        "message": f"Mission active with {updated_count} robots deployed",
+        "deployed_count": updated_count,
+        "robot_count": updated_robot_count,
+        "drone_count": updated_drone_count,
+    }
 
 async def _build_post_mission_report(mission: dict, completed_at: str, audit: List[dict]) -> dict:
+    robot_ids = mission.get("robot_ids", [])
     drone_ids = mission.get("drone_ids", [])
     sensor_ids = mission.get("sensor_ids", [])
     geofence_ids = mission.get("geofence_ids", [])
 
+    robots = await db.robots.find({"id": {"$in": robot_ids}}, {"_id": 0}).to_list(max(1, len(robot_ids)))
     drones = await db.drones.find({"id": {"$in": drone_ids}}, {"_id": 0}).to_list(max(1, len(drone_ids)))
     sensors = await db.sensors.find({"id": {"$in": sensor_ids}}, {"_id": 0}).to_list(max(1, len(sensor_ids)))
     geofences = await db.geofences.find({"id": {"$in": geofence_ids}}, {"_id": 0}).to_list(max(1, len(geofence_ids)))
     alerts = await db.alerts.find({"zone_id": mission.get("zone_id")}, {"_id": 0}).sort("created_at", -1).to_list(10)
 
+    robot_evidence = [{
+        "id": robot.get("id"),
+        "name": robot.get("name"),
+        "robot_type": robot.get("robot_type"),
+        "status": robot.get("status"),
+        "battery": robot.get("battery", 0),
+        "health": robot.get("health", 0),
+        "autonomy_level": robot.get("autonomy_level", 0),
+        "capabilities": robot.get("capabilities", []),
+        "location": {
+            "latitude": robot.get("latitude", 0),
+            "longitude": robot.get("longitude", 0),
+            "altitude": robot.get("altitude", 0),
+            "depth_m": robot.get("depth_m"),
+        },
+        "mission_type": robot.get("mission_type"),
+    } for robot in robots]
     drone_evidence = [{
         "id": drone.get("id"),
         "name": drone.get("name"),
@@ -1469,7 +1616,7 @@ async def _build_post_mission_report(mission: dict, completed_at: str, audit: Li
         "alerts_enabled": fence.get("alerts_enabled", True),
     } for fence in geofences]
 
-    low_battery = [d for d in drone_evidence if float(d.get("battery") or 0) < 25]
+    low_battery = [asset for asset in [*robot_evidence, *drone_evidence] if float(asset.get("battery") or 0) < 25]
     offline_sensors = [s for s in sensor_evidence if s.get("status") != "active"]
     anomalies = []
     if low_battery:
@@ -1485,7 +1632,7 @@ async def _build_post_mission_report(mission: dict, completed_at: str, audit: Li
         "biodiversity_delta_7d_estimate": impact_delta,
         "coverage_km": mission.get("coverage_km", 0),
         "risk_score_at_plan": mission.get("risk_score", 0),
-        "confidence": round(min(0.92, 0.55 + len(drone_evidence) * 0.08 + len(sensor_evidence) * 0.03), 2),
+        "confidence": round(min(0.92, 0.55 + len(robot_evidence) * 0.07 + len(drone_evidence) * 0.05 + len(sensor_evidence) * 0.03), 2),
         "method": counterfactual.get("method", "mission-evidence-rollup-v0"),
     }
 
@@ -1499,6 +1646,7 @@ async def _build_post_mission_report(mission: dict, completed_at: str, audit: Li
         "completed_at": completed_at,
         "duration_mins_planned": mission.get("estimated_duration_mins", 0),
         "mission_type": mission.get("mission_type"),
+        "robots": robot_evidence,
         "drones": drone_evidence,
         "sensors": sensor_evidence,
         "geofences": geofence_context,
@@ -1509,7 +1657,7 @@ async def _build_post_mission_report(mission: dict, completed_at: str, audit: Li
         "anomalies": anomalies,
         "restoration_impact": restoration_impact,
         "recommendations": [
-            "Review drone media against anomaly thresholds before closing field actions.",
+            "Review robotics media and telemetry against anomaly thresholds before closing field actions.",
             "Schedule follow-up sensor validation within 24 hours for the target zone.",
             "Compare biodiversity estimate against next patrol to validate the impact model.",
         ],
@@ -1530,7 +1678,7 @@ async def generate_mission(req: MissionGenerateRequest, request: Request):
     detail = (
         f"Plan synthesized for zone {plan['zone_name']} "
         f"(go_score={plan['go_score']}, risk={plan['risk_score']}, "
-        f"drones={len(plan['drone_ids'])}, status={initial_status})."
+        f"robots={len(plan.get('robot_ids', []))}, drones={len(plan.get('drone_ids', []))}, status={initial_status})."
     )
     mission = Mission(
         **plan,
@@ -1618,7 +1766,8 @@ async def complete_mission(request: Request, mission_id: str = Path(..., pattern
 
     summary = (
         f"Mission completed for {mission.get('zone_name')}. "
-        f"{len(mission.get('drone_ids', []))} drones, {len(mission.get('sensor_ids', []))} sensors, "
+        f"{len(mission.get('robot_ids', []))} robots, {len(mission.get('drone_ids', []))} legacy drones, "
+        f"{len(mission.get('sensor_ids', []))} sensors, "
         f"risk score {mission.get('risk_score', 0)}."
     )
     now = datetime.now(timezone.utc).isoformat()
@@ -2137,7 +2286,7 @@ async def seed_data(user: dict = Depends(require_role(["admin"]))):
         ))
 
     robot_specs = [
-        ("Soil Rover 11", "ground", zones[0], "sampling", 82, 91, 0.74, ["soil_sampling", "trail_mapping", "payload_delivery"]),
+        ("Soil Rover 11", "ground", zones[0], "standby", 82, 91, 0.74, ["soil_sampling", "trail_mapping", "payload_delivery"]),
         ("Ranger Mule 18", "ground", zones[1], "standby", 76, 88, 0.72, ["ranger_support", "payload_delivery"]),
         ("Trail Scout 23", "ground", zones[2], "mapping", 69, 84, 0.76, ["trail_inspection", "thermal_scan"]),
         ("Coral Medic", "aquatic", zones[3], "restoring", 91, 90, 0.81, ["coral_repair", "reef_mapping"]),

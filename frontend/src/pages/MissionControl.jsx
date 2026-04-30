@@ -31,6 +31,7 @@ import {
   geofenceAPI,
   missionAPI,
   patrolAPI,
+  robotAPI,
   sensorAPI,
   zoneAPI,
 } from "../lib/api";
@@ -92,7 +93,7 @@ function toPercent(value) {
 
 function readinessIcon(label) {
   const normalized = label.toLowerCase();
-  if (normalized.includes("drone") || normalized.includes("battery")) return Rocket;
+  if (normalized.includes("robot") || normalized.includes("drone") || normalized.includes("battery")) return Rocket;
   if (normalized.includes("geofence")) return Shield;
   if (normalized.includes("weather")) return Gauge;
   return SatelliteDish;
@@ -102,19 +103,34 @@ function labelize(value) {
   return (value || "").replaceAll("_", " ");
 }
 
-function missionAssets(mission, drones, sensors, geofences, alerts) {
-  if (!mission) return { drones: [], sensors: [], geofences: [], alerts: [] };
+function legacyDroneAsRobot(drone) {
   return {
-    drones: drones.filter((drone) => mission.drone_ids?.includes(drone.id)),
+    ...drone,
+    robot_type: "aerial",
+    health: drone.battery,
+    autonomy_level: 0.76,
+    capabilities: ["aerial_survey", "legacy_drone_feed"],
+    source: "legacy_drone",
+  };
+}
+
+function missionAssets(mission, robots, drones, sensors, geofences, alerts) {
+  if (!mission) return { robots: [], drones: [], sensors: [], geofences: [], alerts: [] };
+  const assignedRobots = robots.filter((robot) => mission.robot_ids?.includes(robot.id));
+  const assignedDrones = drones.filter((drone) => mission.drone_ids?.includes(drone.id));
+  const projectedRobots = assignedRobots.length ? assignedRobots : assignedDrones.map(legacyDroneAsRobot);
+  return {
+    robots: projectedRobots,
+    drones: assignedDrones,
     sensors: sensors.filter((sensor) => mission.sensor_ids?.includes(sensor.id)),
     geofences: geofences.filter((fence) => mission.geofence_ids?.includes(fence.id)),
     alerts: alerts.filter((alert) => alert.zone_id === mission.zone_id).slice(0, 5),
   };
 }
 
-function missionToPlan(mission, targetZone, drones, sensors, geofences, alerts, patrols) {
+function missionToPlan(mission, targetZone, robots, drones, sensors, geofences, alerts, patrols) {
   if (!mission) return null;
-  const assets = missionAssets(mission, drones, sensors, geofences, alerts);
+  const assets = missionAssets(mission, robots, drones, sensors, geofences, alerts);
   return {
     id: mission.id,
     name: mission.name,
@@ -213,7 +229,7 @@ function makeTheatreLabel(text, eyebrow = "mission asset") {
   return sprite;
 }
 
-function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofences, isConnected }) {
+function MissionTheatre3D({ mission, plan, selectedZone, robots, drones, sensors, geofences, isConnected }) {
   const mountRef = useRef(null);
   const fallbackCanvasRef = useRef(null);
   const sceneRef = useRef(null);
@@ -357,9 +373,9 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
       ctx.stroke();
     });
 
-    const theatreDrones = (plan?.assets.drones.length ? plan.assets.drones : drones).slice(0, 6);
-    theatreDrones.forEach((drone, index) => {
-      const angle = (index / Math.max(1, theatreDrones.length)) * Math.PI * 2 - Math.PI / 2;
+    const theatreRobots = (plan?.assets.robots.length ? plan.assets.robots : robots.length ? robots : drones.map(legacyDroneAsRobot)).slice(0, 6);
+    theatreRobots.forEach((robot, index) => {
+      const angle = (index / Math.max(1, theatreRobots.length)) * Math.PI * 2 - Math.PI / 2;
       const x = cx + Math.cos(angle) * (150 + index * 8);
       const y = cy + Math.sin(angle) * (64 + index * 4);
       ctx.strokeStyle = "rgba(217, 140, 69, 0.86)";
@@ -383,7 +399,7 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
       ctx.restore();
       ctx.fillStyle = "#16311f";
       ctx.font = "600 12px 'DM Sans', sans-serif";
-      ctx.fillText(drone.name || `Drone ${index + 1}`, x + 14, y - 14);
+      ctx.fillText(robot.name || `Robot ${index + 1}`, x + 14, y - 14);
     });
 
     const theatreSensors = (plan?.assets.sensors.length ? plan.assets.sensors : sensors.filter((sensor) => sensor.zone_id === selectedZone?.id)).slice(0, 10);
@@ -403,7 +419,7 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
     ctx.fillText(plan?.targetZone?.name || selectedZone?.name || "Mission Theatre", 24, 86);
     ctx.font = "500 12px 'JetBrains Mono', monospace";
     ctx.fillText(`${mission?.status || "planning"} / ${isConnected ? "live stream" : "polling"}`, 24, 108);
-  }, [webglUnavailable, mission, plan, selectedZone, drones, sensors, isConnected]);
+  }, [webglUnavailable, mission, plan, selectedZone, robots, drones, sensors, isConnected]);
 
   useEffect(() => {
     if (webglUnavailable) return;
@@ -416,11 +432,11 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
     animatedRef.current = [];
 
     const zone = plan?.targetZone || selectedZone;
-    const assets = plan?.assets || missionAssets(mission, drones, sensors, geofences, []);
-    const theatreDrones = assets.drones.length ? assets.drones : drones.slice(0, 6);
+    const assets = plan?.assets || missionAssets(mission, robots, drones, sensors, geofences, []);
+    const theatreRobots = assets.robots.length ? assets.robots : robots.length ? robots.slice(0, 6) : drones.slice(0, 6).map(legacyDroneAsRobot);
     const theatreSensors = assets.sensors.length ? assets.sensors : sensors.filter((sensor) => sensor.zone_id === zone?.id).slice(0, 10);
     const theatreGeofences = assets.geofences.length ? assets.geofences : geofences.filter((fence) => fence.zone_id === zone?.id).slice(0, 5);
-    const projector = buildMissionProjector(zone, theatreDrones, theatreSensors, theatreGeofences);
+    const projector = buildMissionProjector(zone, theatreRobots, theatreSensors, theatreGeofences);
     const target = hasCoordinate(zone, "center_lat", "center_lng")
       ? projector.project(zone.center_lat, zone.center_lng, 0.16)
       : new THREE.Vector3(0, 0.16, 0);
@@ -495,16 +511,17 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
       group.add(pulse);
     });
 
-    theatreDrones.forEach((drone, index) => {
-      if (!hasCoordinate(drone)) return;
-      const position = projector.project(drone.latitude, drone.longitude, 2.2 + index * 0.18);
+    theatreRobots.forEach((robot, index) => {
+      if (!hasCoordinate(robot)) return;
+      const altitude = robot.robot_type === "ground" ? 0.72 : robot.robot_type === "aquatic" ? 0.48 : 2.2 + index * 0.18;
+      const position = projector.project(robot.latitude, robot.longitude, altitude);
       const droneGroup = new THREE.Group();
       droneGroup.position.copy(position);
       droneGroup.userData = { kind: "drone", baseY: position.y, offset: index * 0.8 };
 
       const body = new THREE.Mesh(
         new THREE.BoxGeometry(0.62, 0.16, 0.42),
-        new THREE.MeshStandardMaterial({ color: drone.status === "offline" ? "#8a4b3f" : "#243d2c", roughness: 0.48, metalness: 0.18 })
+        new THREE.MeshStandardMaterial({ color: robot.status === "offline" ? "#8a4b3f" : "#243d2c", roughness: 0.48, metalness: 0.18 })
       );
       body.castShadow = true;
       droneGroup.add(body);
@@ -527,7 +544,7 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
         droneGroup.add(rotor);
       });
 
-      if (mission?.drone_ids?.includes(drone.id)) {
+      if (mission?.robot_ids?.includes(robot.id) || mission?.drone_ids?.includes(robot.id)) {
         const curve = new THREE.CatmullRomCurve3([
           new THREE.Vector3(position.x, 0.8, position.z),
           new THREE.Vector3((position.x + target.x) / 2, 4.4, (position.z + target.z) / 2),
@@ -540,15 +557,15 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
         group.add(arc);
       }
 
-      const label = makeTheatreLabel(drone.name || `Drone ${index + 1}`, `${Math.round(drone.battery || 0)}% / ${drone.status || "unknown"}`);
+      const label = makeTheatreLabel(robot.name || `Robot ${index + 1}`, `${Math.round(robot.battery || 0)}% / ${robot.robot_type || "robot"}`);
       label.position.set(0, 1.2, 0);
       droneGroup.add(label);
       animatedRef.current.push(droneGroup);
       group.add(droneGroup);
     });
-  }, [webglUnavailable, mission, plan, selectedZone, drones, sensors, geofences]);
+  }, [webglUnavailable, mission, plan, selectedZone, robots, drones, sensors, geofences]);
 
-  const assignedDrones = plan?.assets.drones.length || 0;
+  const assignedRobots = plan?.assets.robots.length || 0;
   const theatreStatus = mission?.status || "planning";
 
   return (
@@ -577,8 +594,8 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
               <p className="mt-2 truncate text-sm font-semibold">{plan?.targetZone?.name || selectedZone?.name || "pending"}</p>
             </div>
             <div className="rounded-sm border border-border p-3">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Drones</p>
-              <p className="mt-2 text-2xl font-bold">{assignedDrones || drones.length}</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Robots</p>
+              <p className="mt-2 text-2xl font-bold">{assignedRobots || robots.length || drones.length}</p>
             </div>
             <div className="rounded-sm border border-border p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Sensors</p>
@@ -592,7 +609,7 @@ function MissionTheatre3D({ mission, plan, selectedZone, drones, sensors, geofen
           <div className="mt-4 grid grid-cols-2 gap-3">
             <div className="rounded-sm border border-border p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Routes</p>
-              <p className="mt-2 text-2xl font-bold">{assignedDrones}</p>
+              <p className="mt-2 text-2xl font-bold">{assignedRobots}</p>
             </div>
             <div className="rounded-sm border border-border p-3">
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Coverage</p>
@@ -690,7 +707,7 @@ function AssetManifest({ plan }) {
         </CardHeader>
         <CardContent>
           <p className="rounded-sm border border-dashed border-border p-4 text-sm text-muted-foreground">
-            Generate a backend mission to bind drones, sensors, and geofences.
+            Generate a backend mission to bind robots, sensors, and geofences.
           </p>
         </CardContent>
       </Card>
@@ -706,19 +723,20 @@ function AssetManifest({ plan }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div>
-          <p className="mb-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">Drone stack</p>
+          <p className="mb-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">Robotics stack</p>
           <div className="space-y-2">
-            {plan.assets.drones.length ? plan.assets.drones.map((drone) => (
-              <div key={drone.id} className="rounded-sm border border-border p-3">
+            {plan.assets.robots.length ? plan.assets.robots.map((robot) => (
+              <div key={robot.id} className="rounded-sm border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{drone.name}</span>
-                  <Badge variant={statusClass(drone.status)}>{drone.status}</Badge>
+                  <span className="truncate text-sm font-medium">{robot.name}</span>
+                  <Badge variant={statusClass(robot.status)}>{robot.status}</Badge>
                 </div>
-                <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                  <Battery className="h-3.5 w-3.5" />{Math.round(drone.battery || 0)}% battery
+                <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1.5"><Battery className="h-3.5 w-3.5" />{Math.round(robot.battery || 0)}% battery</span>
+                  <span className="font-mono">{labelize(robot.robot_type || "robot")}</span>
                 </div>
               </div>
-            )) : <p className="text-sm text-muted-foreground">No drone assets available.</p>}
+            )) : <p className="text-sm text-muted-foreground">No robotics assets available.</p>}
           </div>
         </div>
 
@@ -835,8 +853,8 @@ function MissionReport({ mission }) {
     <div className="space-y-4" data-testid="mission-report-ready">
       <div className="grid gap-3 md:grid-cols-4">
         <div className="rounded-sm border border-border p-3">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Drones</p>
-          <p className="mt-1 text-2xl font-bold">{report.drones?.length || 0}</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Robots</p>
+          <p className="mt-1 text-2xl font-bold">{report.robots?.length || report.drones?.length || 0}</p>
         </div>
         <div className="rounded-sm border border-border p-3">
           <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Sensors</p>
@@ -856,10 +874,10 @@ function MissionReport({ mission }) {
         <div className="rounded-sm border border-border p-4">
           <p className="mb-3 text-sm font-semibold">Evidence Snapshot</p>
           <div className="space-y-2">
-            {(report.drones || []).slice(0, 4).map((drone) => (
-              <div key={drone.id} className="flex items-center justify-between gap-3 border-b border-border pb-2 last:border-0 last:pb-0">
-                <span className="truncate text-sm">{drone.name}</span>
-                <span className="font-mono text-xs text-muted-foreground">{Math.round(drone.battery || 0)}% / {drone.status}</span>
+            {((report.robots || []).length ? report.robots : report.drones || []).slice(0, 4).map((robot) => (
+              <div key={robot.id} className="flex items-center justify-between gap-3 border-b border-border pb-2 last:border-0 last:pb-0">
+                <span className="truncate text-sm">{robot.name}</span>
+                <span className="font-mono text-xs text-muted-foreground">{Math.round(robot.battery || 0)}% / {robot.robot_type || robot.status}</span>
               </div>
             ))}
           </div>
@@ -957,7 +975,7 @@ function missionProgress(mission) {
   return 12;
 }
 
-function ActiveMissionTelemetry({ mission, drones, isConnected }) {
+function ActiveMissionTelemetry({ mission, robots, drones, isConnected }) {
   if (!mission) {
     return (
       <Card data-testid="active-mission-telemetry">
@@ -968,19 +986,21 @@ function ActiveMissionTelemetry({ mission, drones, isConnected }) {
         </CardHeader>
         <CardContent>
           <p className="rounded-sm border border-dashed border-border p-4 text-sm text-muted-foreground">
-            Generate and authorize a mission to bind live drone telemetry.
+            Generate and authorize a mission to bind live robotics telemetry.
           </p>
         </CardContent>
       </Card>
     );
   }
 
-  const assigned = drones.filter((drone) => mission.drone_ids?.includes(drone.id));
+  const assignedRobots = robots.filter((robot) => mission.robot_ids?.includes(robot.id));
+  const assignedDrones = drones.filter((drone) => mission.drone_ids?.includes(drone.id)).map(legacyDroneAsRobot);
+  const assigned = assignedRobots.length ? assignedRobots : assignedDrones;
   const averageBattery = assigned.length
-    ? Math.round(assigned.reduce((sum, drone) => sum + (drone.battery || 0), 0) / assigned.length)
+    ? Math.round(assigned.reduce((sum, robot) => sum + (robot.battery || 0), 0) / assigned.length)
     : 0;
   const progress = missionProgress(mission);
-  const stalled = assigned.filter((drone) => ["offline", "maintenance"].includes(drone.status) || (drone.battery || 0) < 15);
+  const stalled = assigned.filter((robot) => ["offline", "maintenance"].includes(robot.status) || (robot.battery || 0) < 15);
 
   return (
     <Card data-testid="active-mission-telemetry">
@@ -1003,33 +1023,33 @@ function ActiveMissionTelemetry({ mission, drones, isConnected }) {
           <Progress value={progress} className="h-2" indicatorClassName={mission.status === "aborted" ? "bg-destructive" : "bg-primary"} />
           <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
             <span>{progress}% progress</span>
-            <span>{assigned.length} drones</span>
+            <span>{assigned.length} robots</span>
             <span>{averageBattery}% avg battery</span>
           </div>
         </div>
 
         <div className="space-y-2">
-          {assigned.length ? assigned.map((drone) => (
-            <div key={drone.id} className="rounded-sm border border-border p-3">
+          {assigned.length ? assigned.map((robot) => (
+            <div key={robot.id} className="rounded-sm border border-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{drone.name}</span>
-                <Badge variant={statusClass(drone.status)}>{drone.status}</Badge>
+                <span className="truncate text-sm font-medium">{robot.name}</span>
+                <Badge variant={statusClass(robot.status)}>{robot.status}</Badge>
               </div>
               <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-                <span className="flex items-center gap-1.5"><Battery className="h-3.5 w-3.5" />{Math.round(drone.battery || 0)}%</span>
-                <span className="font-mono">{Number(drone.latitude || 0).toFixed(2)}, {Number(drone.longitude || 0).toFixed(2)}</span>
+                <span className="flex items-center gap-1.5"><Battery className="h-3.5 w-3.5" />{Math.round(robot.battery || 0)}%</span>
+                <span className="font-mono">{Number(robot.latitude || 0).toFixed(2)}, {Number(robot.longitude || 0).toFixed(2)}</span>
               </div>
             </div>
           )) : (
             <p className="rounded-sm border border-dashed border-border p-4 text-sm text-muted-foreground">
-              No assigned drones are reporting yet.
+              No assigned robots are reporting yet.
             </p>
           )}
         </div>
 
         {stalled.length > 0 && (
           <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-            {stalled.length} assigned drone{stalled.length === 1 ? "" : "s"} require operator attention.
+            {stalled.length} assigned robot{stalled.length === 1 ? "" : "s"} require operator attention.
           </div>
         )}
       </CardContent>
@@ -1040,6 +1060,7 @@ function ActiveMissionTelemetry({ mission, drones, isConnected }) {
 export default function MissionControl() {
   const { isConnected, lastMessage } = useWebSocket();
   const [zones, setZones] = useState([]);
+  const [robots, setRobots] = useState([]);
   const [drones, setDrones] = useState([]);
   const [sensors, setSensors] = useState([]);
   const [geofences, setGeofences] = useState([]);
@@ -1048,7 +1069,7 @@ export default function MissionControl() {
   const [missions, setMissions] = useState([]);
   const [activeMission, setActiveMission] = useState(null);
   const [targetId, setTargetId] = useState(null);
-  const [missionRequest, setMissionRequest] = useState({ missionType: "patrol", maxDrones: 3, notes: "" });
+  const [missionRequest, setMissionRequest] = useState({ missionType: "patrol", maxRobots: 5, notes: "" });
   const [loading, setLoading] = useState(true);
   const [launchState, setLaunchState] = useState({ status: "idle", message: "" });
 
@@ -1056,8 +1077,9 @@ export default function MissionControl() {
     let cancelled = false;
     const fetchMissionData = async () => {
       setLoading(true);
-      const [zoneRes, droneRes, sensorRes, fenceRes, alertRes, patrolRes, missionRes] = await Promise.allSettled([
+      const [zoneRes, robotRes, droneRes, sensorRes, fenceRes, alertRes, patrolRes, missionRes] = await Promise.allSettled([
         zoneAPI.getAll(),
+        robotAPI.getAll(),
         droneAPI.getAll(),
         sensorAPI.getAll(),
         geofenceAPI.getAll(),
@@ -1067,6 +1089,7 @@ export default function MissionControl() {
       ]);
       if (cancelled) return;
       setZones(zoneRes.status === "fulfilled" ? zoneRes.value.data || [] : []);
+      setRobots(robotRes.status === "fulfilled" ? robotRes.value.data || [] : []);
       setDrones(droneRes.status === "fulfilled" ? droneRes.value.data || [] : []);
       setSensors(sensorRes.status === "fulfilled" ? sensorRes.value.data || [] : []);
       setGeofences(fenceRes.status === "fulfilled" ? fenceRes.value.data || [] : []);
@@ -1119,8 +1142,8 @@ export default function MissionControl() {
   const selectedZone = zones.find((zone) => zone.id === targetId) || rankedZones[0]?.zone || null;
   const missionZone = zones.find((zone) => zone.id === activeMission?.zone_id) || selectedZone;
   const plan = useMemo(
-    () => missionToPlan(activeMission, missionZone, drones, sensors, geofences, alerts, patrols),
-    [activeMission, missionZone, drones, sensors, geofences, alerts, patrols]
+    () => missionToPlan(activeMission, missionZone, robots, drones, sensors, geofences, alerts, patrols),
+    [activeMission, missionZone, robots, drones, sensors, geofences, alerts, patrols]
   );
   const selectedRisk = selectedZone ? riskScore(selectedZone, sensors, geofences, alerts) : 0;
   const displayName = plan?.name || (selectedZone ? `${selectedZone.name} Mission` : "Mission Control");
@@ -1139,7 +1162,8 @@ export default function MissionControl() {
       const response = await missionAPI.generate({
         zone_id: zoneId,
         mission_type: missionRequest.missionType,
-        max_drones: missionRequest.maxDrones,
+        max_robots: missionRequest.maxRobots,
+        max_drones: Math.min(4, missionRequest.maxRobots),
         notes: missionRequest.notes,
       });
       const mission = response.data;
@@ -1230,7 +1254,7 @@ export default function MissionControl() {
       <div className="rounded-sm border border-border bg-card p-8 text-center" data-testid="mission-control-empty">
         <Rocket className="mx-auto mb-3 h-10 w-10 text-muted-foreground" strokeWidth={1.5} />
         <p className="font-heading text-xl font-semibold">No mission telemetry available</p>
-        <p className="mt-2 text-sm text-muted-foreground">Seed zones and drones before opening Mission Control.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Seed zones and robots before opening Mission Control.</p>
       </div>
     );
   }
@@ -1276,7 +1300,7 @@ export default function MissionControl() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <TelemetryTile icon={Target} label="Risk score" value={displayRisk} tone={displayRisk >= 78 ? "danger" : "warn"} />
-        <TelemetryTile icon={Rocket} label="Drones ready" value={plan?.assets.drones.length || 0} tone={plan?.assets.drones.length ? "good" : "warn"} />
+        <TelemetryTile icon={Rocket} label="Robots ready" value={plan?.assets.robots.length || 0} tone={plan?.assets.robots.length ? "good" : "warn"} />
         <TelemetryTile icon={SatelliteDish} label="Sensor nodes" value={plan?.assets.sensors.length || 0} tone={plan?.assets.sensors.length ? "good" : "warn"} />
         <TelemetryTile icon={Radar} label="Patrol routes" value={plan?.patrolCount || patrols.length} />
       </div>
@@ -1285,6 +1309,7 @@ export default function MissionControl() {
         mission={activeMission}
         plan={plan}
         selectedZone={selectedZone}
+        robots={robots}
         drones={drones}
         sensors={sensors}
         geofences={geofences}
@@ -1350,16 +1375,16 @@ export default function MissionControl() {
                 </div>
               </div>
               <div className="rounded-sm border border-border p-3">
-                <p className="mb-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">Max drones</p>
+                <p className="mb-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">Max robots</p>
                 <div className="grid grid-cols-4 gap-2">
-                  {[1, 2, 3, 4].map((count) => (
+                  {[2, 4, 6, 8].map((count) => (
                     <Button
                       key={count}
                       type="button"
-                      variant={missionRequest.maxDrones === count ? "default" : "outline"}
+                      variant={missionRequest.maxRobots === count ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setMissionRequest((current) => ({ ...current, maxDrones: count }))}
-                      data-testid={`mission-max-drones-${count}`}
+                      onClick={() => setMissionRequest((current) => ({ ...current, maxRobots: count }))}
+                      data-testid={`mission-max-robots-${count}`}
                     >
                       {count}
                     </Button>
@@ -1428,7 +1453,7 @@ export default function MissionControl() {
         <AssetManifest plan={plan} />
       </div>
 
-      <ActiveMissionTelemetry mission={activeMission} drones={drones} isConnected={isConnected} />
+      <ActiveMissionTelemetry mission={activeMission} robots={robots} drones={drones} isConnected={isConnected} />
 
       <Card data-testid="mission-flight-plan">
         <CardHeader>

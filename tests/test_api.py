@@ -496,6 +496,29 @@ def test_mission_draft_cannot_authorize(api, auth_headers, unique_name):
     api.delete(f"/zones/{zone_id}")
 
 
+def test_mission_generate_assigns_robot_assets(api, seeded, auth_headers):
+    zones = api.get("/zones").json()
+    assert zones, "seed should provide zones"
+
+    mission = api.post(
+        "/missions/generate",
+        headers=auth_headers,
+        json={
+            "zone_id": zones[0]["id"],
+            "mission_type": "patrol",
+            "max_robots": 3,
+            "max_drones": 2,
+            "notes": "pytest robotics mission",
+        },
+    )
+    assert mission.status_code == 200, mission.text
+    body = mission.json()
+    assert body["robot_ids"], "mission planner should assign robotics assets when available"
+    assert "drone_ids" in body, "legacy drone assignments remain part of the mission contract"
+    assert any(item["label"] == "robots_available" for item in body["readiness"])
+    assert body["evidence"]["selected_robots"]
+
+
 def test_missions_route_rejects_non_uuid_path(api, auth_headers):
     r = api.get("/missions/not-a-uuid", headers=auth_headers)
     assert r.status_code == 422

@@ -61,7 +61,7 @@ export default function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col border-r border-border bg-card transition-all duration-200",
+        "hidden flex-col border-r border-border bg-card transition-all duration-200 md:flex",
         collapsed ? "w-16" : "w-[var(--sidebar-width)]"
       )}
       data-testid="sidebar"
