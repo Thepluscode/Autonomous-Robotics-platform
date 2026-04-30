@@ -2941,7 +2941,8 @@ try:
     else:
         logging.warning("MCP server module loaded but no HTTP app available; /mcp not mounted")
 except Exception as _mcp_exc:  # pragma: no cover — defensive
-    logging.warning("MCP server failed to mount, continuing without it: %s", _mcp_exc)
+    import traceback as _tb
+    logging.warning("MCP server failed to mount, continuing without it: %s\n%s", _mcp_exc, _tb.format_exc())
 
 # CORS — credentials=True requires an explicit origin allowlist (the wildcard
 # `"*"` is incompatible with `Access-Control-Allow-Credentials: true`). Cookies
