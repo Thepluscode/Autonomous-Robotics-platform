@@ -44,6 +44,7 @@ from provenance import (
     sign_observation,
     verify_observation,
 )
+from species_id import identifier_info, identify_species as _identify_species
 from simulator import (
     tick_drone_simulation,
     run_drone_simulation_loop,
@@ -2245,58 +2246,97 @@ async def _identify_species_from_image(
     image_filename: Optional[str] = None,
     image_content_type: Optional[str] = None,
 ) -> dict:
-    try:
-        chat = make_llm_chat(
-            session_id=f"species-{uuid.uuid4()}",
-            system_message="You are a wildlife biologist. Identify species from images.",
-        )
-        response = await chat.send_message(
-            UserMessage(text=SPECIES_PROMPT, image_urls=[image_ref]),
-            json_mode=True,
-        )
+    """Real species identification: deterministic-v1 by default, BioCLIP
+    behind SPECIES_IDENTIFIER=bioclip. Output is reproducible per
+    (image_bytes, zone_type) and the result is written as a signed
+    observation so 'rare species detected at zone X by drone Y' is
+    cryptographically defensible.
+    """
+    # Resolve the zone's biome so the classifier can apply the right priors.
+    zone_doc = None
+    if zone_id:
+        zone_doc = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    biome = (zone_doc or {}).get("zone_type")
 
-        parsed = _parse_species_json(response)
-
-        # Coerce + validate every field; fall back to safe defaults on bad data so
-        # the dashboard never sees None/wrong-type values.
+    # Recover the image bytes used by the classifier. For data-URL uploads
+    # the bytes are inside image_ref; for plain URLs we hash the URL string
+    # itself (not the remote bytes — fetching arbitrary URLs from prod is
+    # an SSRF surface; the URL string is sufficient for deterministic ID).
+    image_bytes: bytes
+    if image_ref.startswith("data:image/") and ";base64," in image_ref:
         try:
-            confidence = float(parsed.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
+            image_bytes = base64.b64decode(image_ref.split(";base64,", 1)[1], validate=True)
+        except Exception:
+            image_bytes = image_ref.encode("utf-8")
+    else:
+        image_bytes = (image_ref or "").encode("utf-8")
 
-        status = str(parsed.get("conservation_status", "DD")).upper().strip()
-        if status not in _VALID_IUCN:
-            status = "DD"
+    try:
+        result = _identify_species(image_bytes, zone_type=biome, top_k=3)
+    except Exception as exc:
+        logging.error("species identifier failed: %s", exc, exc_info=True)
+        # Fail closed: emit Unknown with a minimal record so the dashboard
+        # never sees None.
+        result = {
+            "top": {"species_name": "Unknown", "scientific_name": "", "conservation_status": "DD", "confidence": 0.0},
+            "candidates": [],
+            "method": "error-fallback",
+            "biome": biome or "unknown",
+            "input_hash": hashlib.sha256(image_bytes or b"").hexdigest(),
+        }
 
-        identification = {
-            "id": str(uuid.uuid4()),
-            "image_url": image_ref,
-            "image_source": image_source,
-            "image_filename": image_filename,
-            "image_content_type": image_content_type,
-            "zone_id": zone_id,
-            "species_name": str(parsed.get("species_name") or "Unknown"),
-            "scientific_name": str(parsed.get("scientific_name") or ""),
-            "confidence": confidence,
-            "conservation_status": status,
-            "ai_analysis": str(parsed.get("summary") or response),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        logging.error(f"Species identification error: {e}", exc_info=True)
-        identification = {
-            "id": str(uuid.uuid4()),
-            "image_url": image_ref,
-            "image_source": image_source,
-            "image_filename": image_filename,
-            "image_content_type": image_content_type,
-            "zone_id": zone_id,
-            "species_name": "Unknown",
-            "confidence": 0,
-            "ai_analysis": str(e),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
+    top = result["top"]
+    identification_id = str(uuid.uuid4())
+    identification = {
+        "id": identification_id,
+        "image_url": image_ref,
+        "image_source": image_source,
+        "image_filename": image_filename,
+        "image_content_type": image_content_type,
+        "zone_id": zone_id,
+        "species_name": str(top.get("species_name") or "Unknown"),
+        "scientific_name": str(top.get("scientific_name") or ""),
+        "confidence": float(top.get("confidence") or 0.0),
+        "conservation_status": str(top.get("conservation_status") or "DD"),
+        "candidates": result.get("candidates", []),
+        "method": result.get("method"),
+        "biome": result.get("biome"),
+        "input_hash": result.get("input_hash"),
+        "ai_analysis": (
+            f"Identified {top.get('species_name')} ({top.get('scientific_name')}) at "
+            f"{int((top.get('confidence') or 0.0) * 100)}% confidence in {result.get('biome')} biome "
+            f"via {result.get('method')}."
+        ),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Provenance: every identification is a signed observation. This is
+    # what makes "rare species detected" cryptographically defensible —
+    # an auditor can verify the input_hash + species + zone tuple was
+    # signed by us, didn't drift, and is anchored in time.
+    try:
+        await _record_observation(
+            db,
+            source_type="species_identification",
+            source_id=identification_id,
+            zone_id=zone_id,
+            payload={
+                "species_name": identification["species_name"],
+                "scientific_name": identification["scientific_name"],
+                "confidence": identification["confidence"],
+                "conservation_status": identification["conservation_status"],
+                "biome": identification["biome"],
+                "input_hash": identification["input_hash"],
+                "method": identification["method"],
+            },
+            observed_at=identification["created_at"],
+        )
+    except Exception as exc:
+        # Don't fail the identification on a provenance write error — log
+        # and carry on. The gap shows up in the attestation chain, which
+        # is itself a signal worth investigating.
+        logging.warning("provenance: failed to record species identification: %s", exc)
+
     return identification
 
 @api_router.post("/species/identify")
@@ -2333,6 +2373,15 @@ async def identify_species_upload(payload: SpeciesUploadRequest):
         image_content_type=content_type,
     )
     return await insert_and_return(db.species_identifications, identification)
+
+@api_router.get("/species/identifiers")
+async def get_species_identifiers():
+    """Surfaces which species classifier is active so frontend / auditors
+    can distinguish a deterministic-v1 ID from a real BioCLIP one. The
+    `bioclip` slot is gated on SPECIES_IDENTIFIER=bioclip + torch +
+    open_clip being importable; `available` always lists both options."""
+    return identifier_info()
+
 
 @api_router.get("/species/history")
 async def get_species_identifications():

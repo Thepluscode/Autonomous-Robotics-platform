@@ -799,8 +799,9 @@ def test_species_stats_endpoint(api):
 
 def test_species_identify_returns_parsed_structured_fields(api):
     """The endpoint used to hardcode species_name='Identified Species' / confidence=0.85.
-    Now it asks the LLM for JSON and parses the actual fields. In offline mode the
-    fallback JSON still satisfies the schema so the dashboard never sees None."""
+    Now it runs the deterministic classifier (or BioCLIP if env-flagged), pulls
+    from a curated biome taxonomy, signs the result as an observation, and never
+    returns the legacy hardcoded values."""
     r = api.post("/species/identify?image_url=https://example.com/fox.jpg")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -813,6 +814,51 @@ def test_species_identify_returns_parsed_structured_fields(api):
     # The legacy hardcoded values must not leak through any longer.
     assert body["species_name"] != "Identified Species"
     assert body["scientific_name"] != "Species scientifica"
+    # New: real classifier surfaces method, biome, candidates, and input_hash.
+    assert "method" in body and body["method"]
+    assert "biome" in body
+    assert isinstance(body.get("candidates"), list) and body["candidates"]
+    assert "input_hash" in body and len(body["input_hash"]) == 64
+
+
+def test_species_identify_is_deterministic_per_input(api):
+    """Same image_url + same zone (none) -> same species, same confidence.
+    This is what makes the chain audit-replayable."""
+    r1 = api.post("/species/identify?image_url=https://example.com/jaguar-track.jpg").json()
+    r2 = api.post("/species/identify?image_url=https://example.com/jaguar-track.jpg").json()
+    assert r1["species_name"] == r2["species_name"]
+    assert r1["scientific_name"] == r2["scientific_name"]
+    assert r1["confidence"] == r2["confidence"]
+    assert r1["input_hash"] == r2["input_hash"]
+
+
+def test_species_identify_writes_signed_observation(api, auth_headers):
+    """Every identification produces a signed species_identification
+    observation in the verifiable rewilding chain."""
+    before = api.get("/observations?source_type=species_identification&limit=1", headers=auth_headers).json()
+    before_count = len(before)
+
+    api.post("/species/identify?image_url=https://example.com/observation-chain.jpg")
+
+    after = api.get("/observations?source_type=species_identification&limit=5", headers=auth_headers).json()
+    assert after, "species ID must produce a signed observation"
+    # The newest one verifies cleanly.
+    obs_id = after[0]["id"]
+    fetched = api.get(f"/observations/{obs_id}", headers=auth_headers).json()
+    assert fetched["verification"]["valid"] is True
+    assert fetched["source_type"] == "species_identification"
+    assert "species_name" in fetched["payload"]
+    assert "input_hash" in fetched["payload"]
+
+
+def test_species_identifiers_endpoint(api):
+    r = api.get("/species/identifiers")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["active"] in {"deterministic", "deterministic-fallback", "bioclip"}
+    assert "deterministic" in body["available"] and "bioclip" in body["available"]
+    assert body["deterministic_taxonomy_size"] >= 20  # 5 biomes × ≥4 species each
+    assert {"forest", "wetland", "grassland", "coastal", "desert"}.issubset(set(body["biomes"]))
 
 
 def test_species_identify_accepts_image_upload(api):
