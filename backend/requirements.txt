@@ -18,6 +18,10 @@ distro==1.9.0
 dnspython==2.8.0
 ecdsa==0.19.1
 email-validator==2.3.0
+# MCP (Model Context Protocol) — optional. If install fails or version
+# isn't pinned-compatible with deploy Python, mcp_server.py degrades to
+# a no-op and the rest of the stack stays up.
+mcp>=1.6,<2.0
 # emergentintegrations: NOT on PyPI. This repo ships a local stub at
 # backend/emergentintegrations/llm/chat.py which Python imports directly
 # because backend/ is on sys.path at runtime. Do not re-pin this.

@@ -2926,6 +2926,23 @@ async def zone_attestation(
 
 app.include_router(api_router)
 
+# ==================== MCP SURFACE ====================
+# Mount the MCP server (Model Context Protocol) at /mcp so any MCP-
+# compatible agent — Claude Desktop, Claude Code, MCP-aware GPT clients,
+# custom LangChain agents — can run the platform autonomously. Gated on
+# MCP_API_KEY; if the SDK isn't installed or the env var isn't set, the
+# mount is skipped or returns 503 respectively. Backend boot does not
+# fail when MCP is unavailable.
+try:
+    from mcp_server import mcp_http_app as _mcp_http_app
+    if _mcp_http_app is not None:
+        app.mount("/mcp", _mcp_http_app)
+        logging.info("MCP server mounted at /mcp")
+    else:
+        logging.warning("MCP server module loaded but no HTTP app available; /mcp not mounted")
+except Exception as _mcp_exc:  # pragma: no cover — defensive
+    logging.warning("MCP server failed to mount, continuing without it: %s", _mcp_exc)
+
 # CORS — credentials=True requires an explicit origin allowlist (the wildcard
 # `"*"` is incompatible with `Access-Control-Allow-Credentials: true`). Cookies
 # are httpOnly and the frontend uses `withCredentials` to send them, so the

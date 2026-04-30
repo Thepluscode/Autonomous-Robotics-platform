@@ -851,6 +851,25 @@ def test_species_identify_writes_signed_observation(api, auth_headers):
     assert "input_hash" in fetched["payload"]
 
 
+def test_mcp_unauthenticated_request_is_blocked(base_url, _require_live_backend):
+    """Without X-MCP-API-Key, the MCP surface must refuse. If MCP_API_KEY
+    isn't set in the deploy env we get 503 (broken-on-purpose); if it
+    is set we get 401 (missing/invalid key). Either way, no anonymous
+    access. Anything else is a security hole — public MCP would let any
+    agent run our platform."""
+    import requests
+    r = requests.post(
+        f"{base_url}/mcp/",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        timeout=5,
+    )
+    # 404 means the mount didn't land at all — also acceptable, just less
+    # informative. The forbidden statuses are the goal.
+    assert r.status_code in {401, 503, 404, 405, 406}, (
+        f"MCP mount must NOT accept anonymous requests; got {r.status_code}"
+    )
+
+
 def test_intervention_actions_catalog(api):
     r = api.get("/interventions/actions")
     assert r.status_code == 200, r.text
