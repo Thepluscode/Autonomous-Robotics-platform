@@ -56,7 +56,55 @@ from simulator import (
 # Star-import the Pydantic models so route handlers below can keep using
 # them by bare name (Drone, Zone, etc.) instead of `models.Drone`. New
 # request/response models go in models.py, not here.
-from models import *  # noqa: F401,F403
+# Explicit imports (no star) so static analysis — IDE go-to-definition,
+# refactor tools, and the graphify knowledge graph — can resolve the
+# server↔models contract. The previous `from models import *` made every
+# model invisible to AST-based tooling. If you add a new model and need
+# it in server.py, add it to this list.
+from models import (
+    AIAnalysisRequest,
+    AIAnalysisResponse,
+    Alert,
+    AlertCreate,
+    Comment,
+    DashboardStats,
+    DeployMissionRequest,
+    Drone,
+    DroneCreate,
+    DroneUpdate,
+    EcosystemForecast,
+    ForgotPassword,
+    Geofence,
+    GeofenceCreate,
+    Intervention,
+    InterventionExecuteRequest,
+    InterventionRule,
+    InterventionRuleCreate,
+    Mission,
+    MissionAbortRequest,
+    MissionGenerateRequest,
+    Observation,
+    PasswordReset,
+    PatrolReport,
+    PatrolSchedule,
+    PatrolScheduleCreate,
+    PatrolScheduleUpdate,
+    Robot,
+    RobotCreate,
+    RobotDeployRequest,
+    RobotTaskRequest,
+    RobotUpdate,
+    Sensor,
+    SensorCreate,
+    SpeciesUploadRequest,
+    Task,
+    TaskCreate,
+    UserLogin,
+    UserRegister,
+    Zone,
+    ZoneCreate,
+    ZoneUpdate,
+)
 
 # Centralized LLM-chat builder. Reads provider/model from env at *call time*
 # (not module import) so a `.env` reload — or test-injected env override — is
