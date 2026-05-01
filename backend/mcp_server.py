@@ -43,7 +43,12 @@ Design choices
   exposes ``mcp_http_app = None``. Backend boot must not fail just
   because the optional MCP transport is unavailable.
 """
-from __future__ import annotations
+# NOTE: do NOT add `from __future__ import annotations` here.
+# FastMCP introspects every tool parameter via `param.annotation` and
+# calls `issubclass(param.annotation, Context)` on it. With deferred
+# annotations the value is a string ("str"), not the type, and the
+# whole module fails to import with "issubclass() arg 1 must be a
+# class". Keep the runtime types eager.
 
 import logging
 import os
