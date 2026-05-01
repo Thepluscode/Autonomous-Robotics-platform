@@ -76,11 +76,12 @@ if _MCP_AVAILABLE:
         return await db.zones.find({}, {"_id": 0}).to_list(1000)
 
     @mcp.tool()
-    async def list_robots(robot_type: Optional[str] = None) -> list:
+    async def list_robots(robot_type: str = "") -> list:
         """List robotics assets across all five domains: aerial / ground /
-        aquatic / fixed_sensor / orbital. Filter by `robot_type` to scope
-        to one domain. Returns autonomy level, battery, health, status,
-        zone assignment, and capabilities for each."""
+        aquatic / fixed_sensor / orbital. Pass `robot_type` (one of the
+        five) to filter; empty string returns all. Returns autonomy
+        level, battery, health, status, zone assignment, and
+        capabilities for each."""
         from server import db
         query: dict = {}
         if robot_type:
@@ -112,16 +113,17 @@ if _MCP_AVAILABLE:
     @mcp.tool()
     async def generate_mission(
         mission_type: str = "intervene",
-        zone_id: Optional[str] = None,
+        zone_id: str = "",
         max_drones: int = 3,
         notes: str = "",
     ) -> dict:
-        """Plan a multi-domain robotics mission server-side. If zone_id
-        is omitted, the planner auto-picks the highest-leverage zone.
-        Returns the mission with status=ready (above the go_score floor)
-        or draft (below). The plan includes counterfactual trajectories
-        with 80% CI bands and source_hashes referencing recent signed
-        zone observations — the chart that closes the Series A.
+        """Plan a multi-domain robotics mission server-side. Empty
+        zone_id (default) lets the planner auto-pick the highest-
+        leverage zone. Returns the mission with status=ready (above
+        the go_score floor) or draft (below). The plan includes
+        counterfactual trajectories with 80% CI bands and
+        source_hashes referencing recent signed zone observations —
+        the chart that closes the Series A.
 
         mission_type: patrol | inspect | intervene
         """
@@ -129,7 +131,10 @@ if _MCP_AVAILABLE:
         from models import Mission, MissionGenerateRequest
 
         req = MissionGenerateRequest(
-            mission_type=mission_type, zone_id=zone_id, max_drones=max_drones, notes=notes,
+            mission_type=mission_type,
+            zone_id=zone_id or None,
+            max_drones=max_drones,
+            notes=notes,
         )
         user = {"id": "mcp-agent", "name": "MCP agent", "email": "mcp@platform.internal"}
         plan = await _plan_mission(req, user)
@@ -181,9 +186,9 @@ if _MCP_AVAILABLE:
     async def execute_intervention(
         action: str,
         robot_id: str,
-        zone_id: Optional[str] = None,
-        params: Optional[dict] = None,
-        mission_id: Optional[str] = None,
+        zone_id: str = "",
+        params: dict = {},
+        mission_id: str = "",
         notes: str = "",
     ) -> dict:
         """Execute one of the registered intervention verbs against a
@@ -310,29 +315,32 @@ if _MCP_AVAILABLE:
 
     @mcp.tool()
     async def forecast_counterfactual(
-        zone_id: str, mission_type: Optional[str] = None, horizon_days: int = 14,
+        zone_id: str, mission_type: str = "", horizon_days: int = 14,
     ) -> dict:
         """Chart-ready counterfactual: paired no-deploy / with-deploy
         biodiversity-index trajectories with 80% CI bands. Same data
         the Mission Control launch screen renders, exposed for agent
-        loops that want to compare hypothetical interventions."""
+        loops that want to compare hypothetical interventions. Empty
+        mission_type uses the default recovery profile."""
         from server import db, _counterfactual_trajectories
         zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
         if not zone:
             raise ValueError(f"zone {zone_id} not found")
-        return _counterfactual_trajectories(zone, mission_type=mission_type, horizon_days=horizon_days)
+        return _counterfactual_trajectories(
+            zone, mission_type=(mission_type or None), horizon_days=horizon_days,
+        )
 
     # ==================== SPECIES ====================
 
     @mcp.tool()
-    async def identify_species_from_url(image_url: str, zone_id: Optional[str] = None) -> dict:
+    async def identify_species_from_url(image_url: str, zone_id: str = "") -> dict:
         """Run the species classifier (deterministic-v1 or BioCLIP if
         env-flagged) on an image URL. Output is biome-aware and writes a
         signed species_identification observation in the chain — every
-        identification is independently auditable.
-        """
+        identification is independently auditable. Empty zone_id runs
+        the classifier without biome priors."""
         from server import _identify_species_from_image, db, insert_and_return
-        identification = await _identify_species_from_image(image_url, zone_id)
+        identification = await _identify_species_from_image(image_url, zone_id or None)
         return await insert_and_return(db.species_identifications, identification)
 
     # ==================== AUTH WRAPPER + APP MOUNT ====================
