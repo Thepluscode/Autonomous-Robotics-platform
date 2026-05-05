@@ -11,8 +11,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { droneAPI, zoneAPI } from "../lib/api";
 import { getStatusColor, cn } from "../lib/utils";
 import { Plane, Battery, MapPin, Plus, Rocket, RefreshCw } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
 
 export default function DroneFleet() {
+  const { user } = useAuth();
+  const canWrite = user?.role !== "viewer";
   const [drones, setDrones] = useState([]);
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -97,14 +100,16 @@ export default function DroneFleet() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          {selected.length > 0 && (
+          {canWrite && selected.length > 0 && (
             <Button size="sm" variant="accent" onClick={() => setDeployOpen(true)} data-testid="deploy-selected-btn">
               <Rocket className="w-4 h-4 mr-1" />Deploy {selected.length}
             </Button>
           )}
-          <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="add-drone-btn">
-            <Plus className="w-4 h-4 mr-1" />Add Drone
-          </Button>
+          {canWrite && (
+            <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="add-drone-btn">
+              <Plus className="w-4 h-4 mr-1" />Add Drone
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={fetchData}><RefreshCw className="w-4 h-4" /></Button>
         </div>
       </div>

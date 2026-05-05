@@ -239,7 +239,7 @@ ROLE_PERMISSIONS = {
     "admin": ["all"],
     "field_operator": ["drones", "patrols", "feeds", "zones"],
     "scientist": ["analytics", "species", "reports", "ai"],
-    "viewer": ["dashboard", "map"]
+    "viewer": ["dashboard", "map", "drones", "robotics"]
 }
 
 # ==================== AUTH MODELS — moved to models.py ====================

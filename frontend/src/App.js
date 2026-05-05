@@ -70,8 +70,8 @@ export default function App() {
 
           {/* Protected routes */}
           <Route path="/" element={<ProtectedPage title="Dashboard"><Dashboard /></ProtectedPage>} />
-          <Route path="/robotics" element={<ProtectedPage title="Robotics Fleet" roles={["admin", "field_operator", "scientist"]}><RoboticsCommandCenter /></ProtectedPage>} />
-          <Route path="/drones" element={<ProtectedPage title="Aerial Fleet" roles={["admin", "field_operator"]}><DroneFleet /></ProtectedPage>} />
+          <Route path="/robotics" element={<ProtectedPage title="Robotics Fleet" roles={["admin", "field_operator", "scientist", "viewer"]}><RoboticsCommandCenter /></ProtectedPage>} />
+          <Route path="/drones" element={<ProtectedPage title="Aerial Fleet" roles={["admin", "field_operator", "viewer"]}><DroneFleet /></ProtectedPage>} />
           <Route path="/zones" element={<ProtectedPage title="Zone Management" roles={["admin", "field_operator", "scientist"]}><ZoneManagement /></ProtectedPage>} />
           <Route path="/analytics" element={<ProtectedPage title="Analytics" roles={["admin", "scientist"]}><Analytics /></ProtectedPage>} />
           <Route path="/ai" element={<ProtectedPage title="AI Recommendations" roles={["admin", "scientist"]}><AIRecommendations /></ProtectedPage>} />

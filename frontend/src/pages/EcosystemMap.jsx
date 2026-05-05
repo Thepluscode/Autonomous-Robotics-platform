@@ -802,8 +802,8 @@ export default function EcosystemMap() {
         </div>
       </div>
 
-      <div className="grid h-[calc(100vh-12rem)] min-h-[640px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="h-full overflow-hidden">
+      <div className="grid grid-cols-1 gap-4 xl:h-[calc(100vh-12rem)] xl:min-h-[640px] xl:grid-cols-[minmax(0,1fr)_360px]">
+        <Card className="h-[70vh] min-h-[480px] overflow-hidden xl:h-full xl:min-h-0">
           <CardContent className="relative h-full p-0">
             {viewMode === "3d" ? (
               <ThreeOperationsView
