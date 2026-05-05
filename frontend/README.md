@@ -5,6 +5,11 @@ deployed on Railway via GitHub auto-deploy. Production:
 `https://frontend-production-8fd0.up.railway.app`. See
 `docs/RAILWAY_PRODUCTION.md` in the repo root for env vars + smoke test.
 
+> Build recipe: when this service's Railway Root Directory is `frontend`
+> (the dashboard default), the build is driven by `frontend/Procfile`.
+> When that's not set, `railpack.json` at the repo root is the fallback
+> recipe. See the root `railpack.json` for details.
+
 ---
 
 # Getting Started with Create React App
