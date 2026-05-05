@@ -3035,6 +3035,19 @@ async def _ensure_mongo_init():
                     "created_at": datetime.now(timezone.utc)
                 })
                 logging.info("Admin user created: %s", ADMIN_EMAIL)
+            elif os.environ.get("ADMIN_FORCE_RESET", "").lower() in {"1", "true", "yes"}:
+                # Explicit one-shot recovery: re-hash the password and lift the
+                # role back to admin. Operator must remove this env var after
+                # logging in — otherwise the password is rewritten every boot
+                # and any UI-side password change gets clobbered.
+                await db.users.update_one(
+                    {"email": ADMIN_EMAIL},
+                    {"$set": {
+                        "password_hash": hash_password(ADMIN_PASSWORD),
+                        "role": "admin",
+                    }},
+                )
+                logging.warning("Admin user password reset via ADMIN_FORCE_RESET — unset that env var now")
             logging.info("Mongo init complete (indexes + admin seed)")
             return
         except Exception as exc:
