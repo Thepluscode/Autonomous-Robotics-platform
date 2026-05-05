@@ -1,3 +1,12 @@
+# Frontend — Autonomous Robotics Platform (Gaia Prime)
+
+Multi-domain robotics command center. Built on Create React App + Craco;
+deployed on Railway via GitHub auto-deploy. Production:
+`https://frontend-production-8fd0.up.railway.app`. See
+`docs/RAILWAY_PRODUCTION.md` in the repo root for env vars + smoke test.
+
+---
+
 # Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
