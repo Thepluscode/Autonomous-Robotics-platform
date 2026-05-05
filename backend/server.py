@@ -3013,33 +3013,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Startup events
+# Mongo init runs in the background with retries so a transient Mongo
+# outage at boot doesn't crash-loop the entire backend. Idempotent —
+# `create_index` is a no-op when the index already exists; the admin
+# seed checks-then-creates. Once Mongo cooperates, this exits.
+_MONGO_INIT_RETRY_SECONDS = 30
+
+
+async def _ensure_mongo_init():
+    while True:
+        try:
+            await db.users.create_index("email", unique=True)
+            await db.login_attempts.create_index("identifier")
+            existing = await db.users.find_one({"email": ADMIN_EMAIL})
+            if not existing:
+                await db.users.insert_one({
+                    "email": ADMIN_EMAIL,
+                    "password_hash": hash_password(ADMIN_PASSWORD),
+                    "name": "System Admin",
+                    "role": "admin",
+                    "created_at": datetime.now(timezone.utc)
+                })
+                logging.info("Admin user created: %s", ADMIN_EMAIL)
+            logging.info("Mongo init complete (indexes + admin seed)")
+            return
+        except Exception as exc:
+            logging.warning(
+                "Mongo init failed (retrying in %ds): %s",
+                _MONGO_INIT_RETRY_SECONDS, exc,
+            )
+            await asyncio.sleep(_MONGO_INIT_RETRY_SECONDS)
+
+
+# Startup events — must NOT raise. A failure here causes the whole
+# FastAPI lifespan to fail, the app exits, Railway restart-loops it,
+# and a transient Mongo blip becomes a full platform outage. Every
+# Mongo-touching op is now deferred to a background coroutine that
+# retries with backoff. The app stays up serving requests; routes that
+# need Mongo will surface their own 503s when they hit a closed
+# connection, which is the right granularity.
 @app.on_event("startup")
 async def startup_events():
-    # Create indexes
-    await db.users.create_index("email", unique=True)
-    await db.login_attempts.create_index("identifier")
-    
-    # Seed admin
-    existing = await db.users.find_one({"email": ADMIN_EMAIL})
-    if not existing:
-        await db.users.insert_one({
-            "email": ADMIN_EMAIL,
-            "password_hash": hash_password(ADMIN_PASSWORD),
-            "name": "System Admin",
-            "role": "admin",
-            "created_at": datetime.now(timezone.utc)
-        })
-        logging.info(f"Admin user created: {ADMIN_EMAIL}")
-    
-    # Write test credentials — gated on DEV_MODE because the file contains
-    # the admin password in plaintext. In any non-dev environment the file
-    # would be a credential leak waiting to happen.
-    if os.environ.get("DEV_MODE", "").lower() in {"1", "true", "yes"}:
-        creds_dir = ROOT_DIR.parent / "memory"
-        creds_dir.mkdir(exist_ok=True)
-        with open(creds_dir / "test_credentials.md", "w") as f:
-            f.write(f"""# Test Credentials
+    # Defer Mongo init — won't block startup, won't crash the app.
+    asyncio.create_task(_ensure_mongo_init())
+
+    # DEV_MODE-gated credentials file write — pure filesystem, no Mongo.
+    # The file contains the admin password in plaintext, so it must
+    # never be created in any environment other than local dev.
+    try:
+        if os.environ.get("DEV_MODE", "").lower() in {"1", "true", "yes"}:
+            creds_dir = ROOT_DIR.parent / "memory"
+            creds_dir.mkdir(exist_ok=True)
+            with open(creds_dir / "test_credentials.md", "w") as f:
+                f.write(f"""# Test Credentials
 
 ## Admin Account
 - Email: {ADMIN_EMAIL}
@@ -3052,8 +3078,11 @@ async def startup_events():
 - POST /api/auth/logout
 - GET /api/auth/me
 """)
-    
-    # Start drone simulation (loop lives in simulator.py)
+    except Exception as exc:
+        logging.warning("test_credentials.md write skipped: %s", exc)
+
+    # Start drone simulation (loop lives in simulator.py and is itself
+    # supervised — each tick is wrapped in try/except + backoff).
     asyncio.create_task(run_drone_simulation_loop(db, manager))
 
 @app.on_event("shutdown")
