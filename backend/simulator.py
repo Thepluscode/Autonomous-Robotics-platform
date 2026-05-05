@@ -15,10 +15,14 @@ import math
 from datetime import datetime, timezone
 from typing import List
 
-# Tick cadence + per-tick movement budget. 0.05° ≈ 5km at the equator.
-DRONE_TICK_INTERVAL_S = 5
-DRONE_STEP_DEG = 0.05
-DRONE_ARRIVED_DEG = 0.04   # within this distance the drone is "on station"
+# Tick cadence + per-tick movement budget. Tuned for visible motion at
+# world zoom in the demo — 0.5° ≈ 55km/tick at the equator, ~2s cadence.
+# At zoom levels 3-5 (continent view) this produces a clearly moving
+# marker; physical realism takes a back seat to "I can see it move."
+# Cut over to 0.05/5s if a real fleet is ever wired in.
+DRONE_TICK_INTERVAL_S = 2
+DRONE_STEP_DEG = 0.5
+DRONE_ARRIVED_DEG = 0.4    # within this distance the drone is "on station"
 DRONE_MIN_BATTERY = 5.0
 
 
@@ -54,10 +58,13 @@ async def tick_drone_simulation(db, manager) -> List[dict]:
             if dist <= DRONE_ARRIVED_DEG:
                 new_lat, new_lng, dist_moved = target[0], target[1], dist
             else:
-                ratio = DRONE_STEP_DEG / dist
+                # Clamp ratio so a step that overshoots the target snaps to
+                # the target instead of orbiting it. Necessary now that
+                # DRONE_STEP_DEG can exceed DRONE_ARRIVED_DEG by 1.25x.
+                ratio = min(1.0, DRONE_STEP_DEG / dist)
                 new_lat = lat + dlat * ratio
                 new_lng = lng + dlng * ratio
-                dist_moved = DRONE_STEP_DEG
+                dist_moved = min(DRONE_STEP_DEG, dist)
 
         battery = max(DRONE_MIN_BATTERY, drone.get("battery", 100) - (0.05 + dist_moved * 5))
         battery = round(battery, 2)
