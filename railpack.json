@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.railpack.com/latest",
+  "provider": "node",
+  "packages": {
+    "node": "22"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "cd frontend && npm ci"
+      ]
+    },
+    "build": {
+      "commands": [
+        "cd frontend && npm run build"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "cd /app/frontend && npx --yes serve@latest -s build -l $PORT"
+  },
+  "_comment": "This file only fires for services that build from the repo ROOT (i.e. when their Railway Root Directory is unset). Backend's Root Directory is `backend`, so backend never sees this file and continues to use backend/Procfile. Frontend's Root Directory got cleared during a CLI upload mid-session, so this is its fallback build recipe until the dashboard setting is restored."
+}
