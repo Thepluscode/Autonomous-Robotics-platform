@@ -3081,6 +3081,16 @@ async def startup_events():
     except Exception as exc:
         logging.warning("test_credentials.md write skipped: %s", exc)
 
+    # Hold FastMCP's session_manager context open for the lifetime of the
+    # app. Without this, the streamable_http sub-app raises "Task group
+    # is not initialized" on every /mcp/mcp request because mounting a
+    # sub-app on FastAPI doesn't run that sub-app's lifespan.
+    try:
+        from mcp_server import run_mcp_session_lifespan as _run_mcp_lifespan
+        asyncio.create_task(_run_mcp_lifespan())
+    except Exception as exc:
+        logging.warning("MCP session lifespan not started: %s", exc)
+
     # Start drone simulation (loop lives in simulator.py and is itself
     # supervised — each tick is wrapped in try/except + backoff).
     asyncio.create_task(run_drone_simulation_loop(db, manager))

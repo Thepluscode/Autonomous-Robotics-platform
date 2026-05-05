@@ -404,3 +404,34 @@ if _MCP_AVAILABLE:
 
     if _inner_app is not None:
         mcp_http_app = _MCPAuthWrapper(_inner_app)
+
+    # When mounted as a sub-app on FastAPI, FastMCP's
+    # StreamableHTTPSessionManager doesn't get its lifespan run, so the
+    # internal task group is never initialized. Every request then 500s
+    # with "Task group is not initialized. Make sure to use run()."
+    # This coroutine enters the session manager's context and holds it
+    # open until the app shuts down. server.py kicks it off in
+    # startup_events.
+    import asyncio as _asyncio
+    mcp_session_started = _asyncio.Event()
+
+    async def run_mcp_session_lifespan():
+        try:
+            session_manager = mcp.session_manager
+        except Exception as exc:
+            logger.warning("FastMCP has no session_manager attribute: %s", exc)
+            return
+        try:
+            async with session_manager.run():
+                mcp_session_started.set()
+                try:
+                    await _asyncio.Future()  # block forever
+                except _asyncio.CancelledError:
+                    pass
+        except Exception as exc:
+            logger.warning("FastMCP session_manager.run() failed: %s", exc)
+else:
+    # When mcp SDK isn't importable, expose a no-op so server.py imports
+    # don't crash.
+    async def run_mcp_session_lifespan():
+        return
