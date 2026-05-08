@@ -192,6 +192,7 @@ def test_public_routes_includes_provenance_surface():
     # on these being accessible without an account.
     for path in [
         "/api/public/dashboard",
+        "/api/public/provenance/stats",
         "/api/observations",
         "/api/observations/verify",
         "/.well-known/keys.json",

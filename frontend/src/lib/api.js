@@ -245,6 +245,11 @@ export const provenanceAPI = {
     api.get(`/zones/${zoneId}/attestation?hours=${hours}`),
   // Recent observations, optionally filtered to a zone.
   listObservations: (params = {}) => api.get("/observations", { params }),
+  // Aggregate counters across the chain (last `hours`, capped at 168).
+  // Powers the /gaia-prime header — every number is computed from the
+  // same Mongo collection auditors pull from /api/observations, so the
+  // page and the chain agree by construction.
+  getStats: (hours = 168) => api.get(`/public/provenance/stats?hours=${hours}`),
 };
 
 // ======================== SEED ========================

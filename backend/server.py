@@ -312,6 +312,7 @@ PUBLIC_ROUTES: set[str] = {
     "/api/auth/reset-password",
     # Public conservation surfaces
     "/api/public/dashboard",
+    "/api/public/provenance/stats",
     "/api/observations",
     "/api/observations/verify",
     # Cryptographic key publication (Ed25519 public key, per provenance design)
@@ -3017,6 +3018,67 @@ async def well_known_keys():
     """Public verification keys (JWK format). Standard discovery path
     for any JOSE-compatible verifier — Ed25519 is OKP/Ed25519 in JWK terms."""
     return {"keys": [public_key_jwk()]}
+
+
+@api_router.get("/public/provenance/stats")
+async def public_provenance_stats(hours: int = 168):
+    """Public aggregate over the signed observation chain. Powers the
+    /gaia-prime header counters — every number returned here is computed
+    from the same Mongo collection that feeds the per-zone attestation
+    roots, so what the page shows and what an auditor pulls from
+    `/api/observations` agree by construction.
+
+    The lookback window is capped at `ATTESTATION_MAX_HOURS` (7 days)
+    for the same reason the per-zone endpoint is capped: an unauth'd
+    GET should not be a bulk-export hatch onto the entire chain.
+    """
+    capped = max(1, min(int(hours or 168), ATTESTATION_MAX_HOURS))
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=capped)).isoformat()
+
+    pipeline = [
+        {"$match": {"observed_at": {"$gte": cutoff}}},
+        {
+            "$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "zones": {"$addToSet": "$zone_id"},
+                "earliest": {"$min": "$observed_at"},
+                "latest": {"$max": "$observed_at"},
+            }
+        },
+    ]
+    grouped = await db.observations.aggregate(pipeline).to_list(1)
+    by_source_pipeline = [
+        {"$match": {"observed_at": {"$gte": cutoff}}},
+        {"$group": {"_id": "$source_type", "count": {"$sum": 1}}},
+    ]
+    by_source_rows = await db.observations.aggregate(by_source_pipeline).to_list(50)
+    by_source = {row["_id"]: row["count"] for row in by_source_rows if row.get("_id")}
+
+    if not grouped:
+        return {
+            "window_hours": capped,
+            "since": cutoff,
+            "total_observations": 0,
+            "zones_with_observations": 0,
+            "by_source_type": {},
+            "earliest_observation_at": None,
+            "latest_observation_at": None,
+            "key_id": get_key_id(),
+        }
+
+    head = grouped[0]
+    zone_ids = [z for z in (head.get("zones") or []) if z]
+    return {
+        "window_hours": capped,
+        "since": cutoff,
+        "total_observations": head.get("total", 0),
+        "zones_with_observations": len(zone_ids),
+        "by_source_type": by_source,
+        "earliest_observation_at": head.get("earliest"),
+        "latest_observation_at": head.get("latest"),
+        "key_id": get_key_id(),
+    }
 
 
 @api_router.get("/observations")

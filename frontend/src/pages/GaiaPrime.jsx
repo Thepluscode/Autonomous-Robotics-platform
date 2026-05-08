@@ -17,6 +17,9 @@ import {
   Terminal,
   CheckCircle2,
   ArrowLeft,
+  Activity,
+  Globe2,
+  Clock,
 } from "lucide-react";
 
 // Public, verifiable rewilding surface. /gaia-prime is the page an
@@ -175,21 +178,70 @@ function ZoneAttestationCard({ zone }) {
   );
 }
 
+function relativeTime(iso) {
+  if (!iso) return "—";
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return "—";
+  const diff = Math.max(0, Date.now() - ts);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  return `${days}d ago`;
+}
+
+function StatTile({ icon: Icon, label, value, sub, testId }) {
+  return (
+    <div
+      className="rounded-md border border-border bg-card p-4 flex flex-col gap-1.5"
+      data-testid={testId}
+    >
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+        {Icon ? <Icon className="w-3.5 h-3.5" aria-hidden="true" /> : null}
+        <span>{label}</span>
+      </div>
+      <div className="text-2xl font-heading font-bold tabular-nums">{value}</div>
+      {sub ? <div className="text-xs text-muted-foreground">{sub}</div> : null}
+    </div>
+  );
+}
+
 export default function GaiaPrime() {
   const [zones, setZones] = useState([]);
   const [keyInfo, setKeyInfo] = useState(null);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const fetchAll = async () => {
     try {
-      const [dashboardRes, keysRes] = await Promise.all([
+      // Three parallel reads. Stats may legitimately fail (e.g., older
+      // backend without the endpoint) without sinking the whole page —
+      // allSettled lets the page degrade gracefully on that one section.
+      const [dashboardRes, keysRes, statsRes] = await Promise.allSettled([
         publicAPI.getDashboard(),
         provenanceAPI.getPublicKey(),
+        provenanceAPI.getStats(168),
       ]);
-      const summary = dashboardRes.data?.zone_summary || [];
-      setZones(summary);
-      setKeyInfo(keysRes.data?.keys?.[0] || null);
+      if (dashboardRes.status === "fulfilled") {
+        setZones(dashboardRes.value.data?.zone_summary || []);
+      } else {
+        throw dashboardRes.reason;
+      }
+      if (keysRes.status === "fulfilled") {
+        setKeyInfo(keysRes.value.data?.keys?.[0] || null);
+      } else {
+        throw keysRes.reason;
+      }
+      if (statsRes.status === "fulfilled") {
+        setStats(statsRes.value.data || null);
+      } else {
+        // Stats are nice-to-have; show null tiles instead of failing the page.
+        setStats(null);
+      }
       setError(null);
     } catch (err) {
       setError(err);
@@ -249,6 +301,94 @@ export default function GaiaPrime() {
           />
         ) : (
           <>
+            {/* Live chain counters — every number sourced from the same
+                Mongo collection as /api/observations, so what the page
+                shows and what an auditor pulls agree by construction. */}
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-primary" />
+                <h2 className="font-heading text-lg font-semibold">Live chain</h2>
+                <Badge variant="outline" className="text-[10px] ml-auto">last 7 days</Badge>
+              </div>
+              {stats ? (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <StatTile
+                      icon={FileSignature}
+                      label="Signed observations"
+                      value={stats.total_observations.toLocaleString()}
+                      sub="Ed25519-signed, hash-chained"
+                      testId="stat-observations"
+                    />
+                    <StatTile
+                      icon={Globe2}
+                      label="Active zones"
+                      value={stats.zones_with_observations.toLocaleString()}
+                      sub="contributing to the chain"
+                      testId="stat-zones"
+                    />
+                    <StatTile
+                      icon={Clock}
+                      label="Latest entry"
+                      value={relativeTime(stats.latest_observation_at)}
+                      sub={stats.latest_observation_at ? new Date(stats.latest_observation_at).toLocaleString() : "—"}
+                      testId="stat-latest"
+                    />
+                    <StatTile
+                      icon={Key}
+                      label="Active key"
+                      value={(stats.key_id || "—").slice(0, 8) + "…"}
+                      sub="see verification key"
+                      testId="stat-key"
+                    />
+                  </div>
+                  {Object.keys(stats.by_source_type || {}).length > 0 ? (
+                    <Card>
+                      <CardContent className="p-4">
+                        <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">
+                          Triple-witness mix — observations by source type
+                        </p>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                          {Object.entries(stats.by_source_type)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([sourceType, count]) => (
+                              <div
+                                key={sourceType}
+                                className="rounded border border-border bg-muted/30 p-2"
+                                data-testid={`source-${sourceType}`}
+                              >
+                                <div className="text-xs text-muted-foreground font-mono">
+                                  {sourceType}
+                                </div>
+                                <div className="text-lg font-heading font-semibold tabular-nums">
+                                  {count.toLocaleString()}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-3">
+                          Drone telemetry, sensor readings, and intervention before/action/after
+                          observations cross-witness each other. Auditors verify any of these
+                          against the public key with{" "}
+                          <code className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
+                            POST /api/observations/verify
+                          </code>
+                          .
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                </>
+              ) : (
+                <Card>
+                  <CardContent className="p-4 text-xs text-muted-foreground">
+                    Chain stats unavailable on this backend. Per-zone attestation roots
+                    below are still computed live.
+                  </CardContent>
+                </Card>
+              )}
+            </section>
+
             {/* Public key */}
             <section className="space-y-3">
               <div className="flex items-center gap-2">
