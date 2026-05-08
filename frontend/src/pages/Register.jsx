@@ -6,6 +6,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { toast } from "../lib/toast";
 import { Leaf, AlertCircle } from "lucide-react";
 
 export default function Register() {
@@ -25,6 +26,7 @@ export default function Register() {
     setLoading(true);
     try {
       await register(form);
+      toast.success("Account created", { description: form.email });
       navigate("/", { replace: true });
     } catch (err) {
       setError(err.response?.data?.detail || "Registration failed.");

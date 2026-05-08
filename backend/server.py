@@ -2,9 +2,15 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env', override=True)
+# `override=False` so explicitly-set environment variables (Railway, CI, an
+# operator's shell) win over backend/.env. This is what the rest of the world
+# means by "the environment is the source of truth"; the previous `override=True`
+# meant a stale local .env could silently shadow a deploy-time secret. The
+# JWT_SECRET startup validator below would also be untestable without this.
+load_dotenv(ROOT_DIR / '.env', override=False)
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request, Response, Depends, Path, Query
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from bson import ObjectId
@@ -127,7 +133,37 @@ db = client[os.environ['DB_NAME']]
 
 # Configuration
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
-JWT_SECRET = os.environ.get('JWT_SECRET', 'fallback-secret-key')
+
+# Refuse to boot with a missing, default, or weak JWT secret. The previous
+# `os.environ.get('JWT_SECRET', 'fallback-secret-key')` silently produced a
+# server that signed every token with a publicly-known string when the env
+# var was unset — a single missing line of config turned auth into theatre.
+# Explicit opt-out (`JWT_SECRET_ALLOW_INSECURE=1`) is honored only for local
+# tinkering and emits a CRITICAL log entry on every boot so it can't quietly
+# survive into a deploy.
+_JWT_SECRET_MIN_LEN = 32
+_JWT_SECRET_BLOCKLIST = {"", "fallback-secret-key", "change-me", "secret", "changeme"}
+
+def _validate_jwt_secret() -> str:
+    raw = os.environ.get("JWT_SECRET", "").strip()
+    allow_insecure = os.environ.get("JWT_SECRET_ALLOW_INSECURE", "").lower() in {"1", "true", "yes"}
+    if raw.lower() in _JWT_SECRET_BLOCKLIST or len(raw) < _JWT_SECRET_MIN_LEN:
+        if allow_insecure:
+            logging.critical(
+                "JWT_SECRET is missing/weak/blocklisted but JWT_SECRET_ALLOW_INSECURE=1 — "
+                "starting anyway. NEVER set this in production. Tokens issued in this process "
+                "are forgeable by anyone who reads the source."
+            )
+            return raw or "fallback-secret-key"
+        raise RuntimeError(
+            f"JWT_SECRET is unset, blocklisted, or shorter than {_JWT_SECRET_MIN_LEN} chars. "
+            "Generate one with `python -c 'import secrets; print(secrets.token_hex(32))'` and "
+            "set it in backend/.env. To override for local-only experiments, also set "
+            "JWT_SECRET_ALLOW_INSECURE=1 (CRITICAL log on every boot)."
+        )
+    return raw
+
+JWT_SECRET = _validate_jwt_secret()
 JWT_ALGORITHM = "HS256"
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@ecosystem.com')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
@@ -241,6 +277,82 @@ ROLE_PERMISSIONS = {
     "scientist": ["analytics", "species", "reports", "ai"],
     "viewer": ["dashboard", "map", "drones", "robotics"]
 }
+
+# ==================== PUBLIC ROUTE ALLOWLIST ====================
+#
+# The set of HTTP paths that are deliberately reachable without
+# authentication. The W1 ship list declares this allowlist *now* but does
+# not yet enforce it — the AUTH_GATE_PHASE_A middleware (W1.6) will read
+# this list and 401 anything outside it once the env flag is flipped in W2.
+# Shipping the data structure dark gives reviewers a single, auditable
+# place to see what is intentionally public, instead of having to grep
+# every route handler for the absence of `Depends(get_current_user)`.
+#
+# Categories:
+#   1. Login flow (the user can't authenticate without these)
+#   2. Public conservation data (Gaia Prime moonshot — auditors and the
+#      open public dashboard read here without an account)
+#   3. Health / well-known surfaces (root, JWK key publication)
+#
+# Anything not in this allowlist (including, e.g., /api/drones, /api/zones,
+# /api/missions/*) is meant to be authenticated. The fact that most of
+# those don't yet check auth is the W2 hardening backlog — not a license
+# to add new public routes elsewhere.
+
+PUBLIC_ROUTES: set[str] = {
+    # Root / version probe
+    "/api/",
+    "/api",
+    # Auth bootstrap — needed to obtain a token in the first place
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/refresh",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+    # Public conservation surfaces
+    "/api/public/dashboard",
+    "/api/observations",
+    "/api/observations/verify",
+    # Cryptographic key publication (Ed25519 public key, per provenance design)
+    "/.well-known/keys.json",
+}
+
+# Path *patterns* (regex, anchored to full path). Use these for path
+# parameters where an exact-string set won't work. Keep the list small —
+# every pattern here is a route that auditors / the public dashboard
+# read without an account, by design.
+import re as _re_for_public_routes
+PUBLIC_ROUTE_PATTERNS: list = [
+    # Read a single signed observation by id
+    _re_for_public_routes.compile(r"^/api/observations/[A-Za-z0-9_-]+$"),
+    # Aggregate attestation root for a zone (auditor verifies the chain
+    # without trusting our servers — central to the rewilding-credit story)
+    _re_for_public_routes.compile(r"^/api/zones/[A-Za-z0-9_-]+/attestation$"),
+]
+
+def is_public_path(path: str) -> bool:
+    """Return True if `path` is in the deliberate public-route allowlist.
+
+    Used by the (not-yet-enabled) AUTH_GATE_PHASE_A middleware. Path
+    comparison is exact for entries in `PUBLIC_ROUTES` and full-match
+    regex for entries in `PUBLIC_ROUTE_PATTERNS`. Trailing slashes are
+    treated as significant — `PUBLIC_ROUTES` lists both forms where
+    relevant. Query strings are not part of `path` (FastAPI passes the
+    bare path component to middleware), so callers shouldn't strip them.
+    """
+    if path in PUBLIC_ROUTES:
+        return True
+    for pattern in PUBLIC_ROUTE_PATTERNS:
+        if pattern.fullmatch(path):
+            return True
+    return False
+
+# Cap on the `hours` query parameter accepted by GET /api/zones/{id}/attestation.
+# 168 hours = 7 days. The previous 720h (30-day) cap let a single
+# unauthenticated request pull a month of signed observations, which is too
+# much bulk-export surface to leave behind a public endpoint.
+ATTESTATION_MAX_HOURS: int = 168
 
 # ==================== AUTH MODELS — moved to models.py ====================
 
@@ -1238,6 +1350,13 @@ async def get_public_dashboard():
         },
         "zone_summary": [
             {
+                # `id` is intentionally exposed on this public payload —
+                # /gaia-prime needs it to construct per-zone attestation
+                # URLs (`GET /api/zones/{id}/attestation`) without forcing
+                # auditors to first authenticate. The attestation endpoint
+                # itself only returns hashes + signatures, never raw
+                # observations of sensitive content.
+                "id": z.get("id"),
                 "name": z["name"],
                 "type": z.get("zone_type", "unknown"),
                 "biodiversity": round(z.get("biodiversity_index", 0) * 100, 1),
@@ -2951,7 +3070,12 @@ async def zone_attestation(
     flow: GET this → verify each observation's signature → recompute
     the aggregate root → match. The flow is O(N), good enough for v1
     (upgrade to a real Merkle tree when N gets large)."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, min(int(hours or 24), 24 * 30)))).isoformat()
+    # Cap the lookback window at 7 days. The previous 30-day cap (`24*30`)
+    # let an unauthenticated caller pull a month of signed observations per
+    # request, which made this endpoint a de-facto bulk-export for the whole
+    # provenance chain. Auditors who legitimately need longer windows should
+    # paginate via `since`/`until` (or call this endpoint several times).
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, min(int(hours or 24), ATTESTATION_MAX_HOURS)))).isoformat()
     obs = await db.observations.find(
         {"zone_id": zone_id, "observed_at": {"$gte": cutoff}},
         {"_id": 0, "id": 1, "digest": 1, "observed_at": 1, "source_type": 1, "source_id": 1, "key_id": 1, "signature": 1},
@@ -3012,6 +3136,89 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==================== AUTH GATE — PHASE A ====================
+#
+# When `AUTH_GATE_PHASE_A=1`, this middleware enforces the public-route
+# allowlist declared in W1.3 (`PUBLIC_ROUTES` / `PUBLIC_ROUTE_PATTERNS`):
+# every request to a path NOT in the allowlist must carry a valid access
+# JWT (httpOnly cookie or `Authorization: Bearer …` header). Anything
+# else gets a 401 with a JSON body — including the routes that today
+# don't yet declare `Depends(require_role(...))`.
+#
+# Why ship this *dark* (default-off)? The W1 council ruled that flipping
+# the flag is a separate W2 deploy: this commit ships the mechanism so
+# reviewers can audit the data structure, the test coverage, and the
+# rollback plan in advance. The flag flip in W2 is a one-line config
+# change that is fully reversible by setting it back to "0" / unset.
+#
+# WebSocket upgrades are NOT routed through HTTP middleware; the
+# `/ws/updates` endpoint already enforces auth itself (and that path is
+# in `PUBLIC_ROUTES` only insofar as the upgrade handshake is permitted —
+# the WS handler closes with code 4401 on a missing/invalid token).
+#
+# `/mcp/*` is a separate ASGI mount with its own `MCP_API_KEY` gate.
+# This middleware lets it through unmodified so the LLM agent surface
+# does not silently start 401-ing when Phase A flips on. The MCP mount's
+# own auth is the right place to harden agent access.
+
+@app.middleware("http")
+async def auth_gate_phase_a(request: Request, call_next):
+    # Read flag every request, not at module load — lets tests toggle it
+    # without process restart. The cost is a single dict lookup per
+    # request; negligible vs. the route work that follows.
+    if os.environ.get("AUTH_GATE_PHASE_A", "").lower() not in {"1", "true", "yes"}:
+        return await call_next(request)
+
+    # CORS preflights have no body and no auth headers; let the CORS
+    # middleware (above) handle them. Returning early here also avoids
+    # a 401 on the OPTIONS the browser sends before the real request.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    path = request.url.path
+
+    # MCP mount handles its own auth.
+    if path.startswith("/mcp"):
+        return await call_next(request)
+
+    if is_public_path(path):
+        return await call_next(request)
+
+    # Authenticated path: require an access token. Cookie is the primary
+    # path (browser); Bearer header is the non-browser fallback. This
+    # mirrors `get_current_user` so a request that would have been
+    # accepted by `Depends(get_current_user)` is also accepted here.
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Not authenticated", "phase": "AUTH_GATE_PHASE_A"},
+        )
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid token type", "phase": "AUTH_GATE_PHASE_A"},
+            )
+    except jwt.ExpiredSignatureError:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Token expired", "phase": "AUTH_GATE_PHASE_A"},
+        )
+    except jwt.InvalidTokenError:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token", "phase": "AUTH_GATE_PHASE_A"},
+        )
+
+    return await call_next(request)
+
 
 # Mongo init runs in the background with retries so a transient Mongo
 # outage at boot doesn't crash-loop the entire backend. Idempotent —

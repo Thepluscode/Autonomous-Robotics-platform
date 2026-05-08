@@ -8,6 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { geofenceAPI, zoneAPI } from "../lib/api";
 import { Shield, Plus, Trash2, AlertTriangle, Play } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function GeofencingPage() {
   const [geofences, setGeofences] = useState([]);
@@ -15,17 +17,25 @@ export default function GeofencingPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [violations, setViolations] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [form, setForm] = useState({ name: "", zone_id: "", fence_type: "protected", center_lat: 0, center_lng: 0, radius_km: 1 });
 
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [g, z] = await Promise.all([geofenceAPI.getAll(), zoneAPI.getAll()]);
+      setGeofences(g.data || []);
+      setZones(z.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [g, z] = await Promise.all([geofenceAPI.getAll(), zoneAPI.getAll()]);
-        setGeofences(g.data || []);
-        setZones(z.data || []);
-      } catch {} finally { setLoading(false); }
-    };
-    fetch();
+    fetchData();
   }, []);
 
   const handleCreate = async () => {
@@ -34,19 +44,58 @@ export default function GeofencingPage() {
       const g = await geofenceAPI.getAll();
       setGeofences(g.data || []);
       setCreateOpen(false);
+      const created = form.name;
       setForm({ name: "", zone_id: "", fence_type: "protected", center_lat: 0, center_lng: 0, radius_km: 1 });
-    } catch {}
+      toast.success("Geofence created", { description: created });
+    } catch (err) {
+      toast.error("Couldn't create geofence", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDelete = async (id) => {
-    try { await geofenceAPI.delete(id); setGeofences(prev => prev.filter(g => g.id !== id)); } catch {}
+    try {
+      await geofenceAPI.delete(id);
+      setGeofences(prev => prev.filter(g => g.id !== id));
+      toast.success("Geofence deleted");
+    } catch (err) {
+      toast.error("Couldn't delete geofence", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleCheck = async () => {
-    try { const res = await geofenceAPI.check(); setViolations(res.data); } catch {}
+    try {
+      const res = await geofenceAPI.check();
+      setViolations(res.data);
+      const count = res.data?.violations?.length ?? 0;
+      toast.success("Check complete", {
+        description: count > 0 ? `${count} violation${count === 1 ? "" : "s"} detected.` : "No violations — all clear.",
+      });
+    } catch (err) {
+      toast.error("Check failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const fenceTypeColors = { protected: "success", restricted: "destructive", monitored: "info" };
+
+  if (loading) {
+    return <LoadingState label="Loading geofences..." />;
+  }
+
+  if (error && geofences.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load geofences"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="geofencing-page">
@@ -74,10 +123,17 @@ export default function GeofencingPage() {
         </Card>
       )}
 
-      {geofences.length === 0 && !loading ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <Shield className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No geofences configured. Create virtual boundaries for protected areas.</p>
-        </CardContent></Card>
+      {geofences.length === 0 ? (
+        <EmptyState
+          icon={Shield}
+          title="No geofences configured"
+          description="Create virtual boundaries for protected areas."
+          action={
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />Add Geofence
+            </Button>
+          }
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {geofences.map(fence => (

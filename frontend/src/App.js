@@ -1,6 +1,7 @@
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, ProtectedRoute } from "./contexts/AuthContext";
+import { Toaster } from "./components/state";
 
 // Layout
 import Sidebar from "./components/layout/Sidebar";
@@ -26,6 +27,7 @@ import GeofencingPage from "./pages/Geofencing";
 import TeamCollaboration from "./pages/TeamCollaboration";
 import Reports from "./pages/Reports";
 import PublicDashboard from "./pages/PublicDashboard";
+import GaiaPrime from "./pages/GaiaPrime";
 import NotificationSettings from "./pages/NotificationSettings";
 import MissionControl from "./pages/MissionControl";
 import RoboticsCommandCenter from "./pages/RoboticsCommandCenter";
@@ -66,7 +68,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/public" element={<PublicDashboard />} />
-          <Route path="/gaia-prime" element={<PublicDashboard />} />
+          <Route path="/gaia-prime" element={<GaiaPrime />} />
 
           {/* Protected routes */}
           <Route path="/" element={<ProtectedPage title="Dashboard"><Dashboard /></ProtectedPage>} />
@@ -92,6 +94,7 @@ export default function App() {
           {/* Catch all */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <Toaster />
       </AuthProvider>
     </BrowserRouter>
   );

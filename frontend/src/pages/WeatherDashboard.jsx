@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Badge } from "../components/ui/badge";
 import { weatherAPI } from "../lib/api";
 import { Cloud, Thermometer, Droplets, Wind, Sun, CloudRain, CloudFog } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 const conditionIcons = {
   "Sunny": Sun, "Clear": Sun, "Hot": Sun,
@@ -14,17 +16,53 @@ const conditionIcons = {
 export default function WeatherDashboard() {
   const [weather, setWeather] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchData = async ({ isAutoRefresh = false } = {}) => {
+    if (!isAutoRefresh) setLoading(true);
+    try {
+      const res = await weatherAPI.getAll();
+      setWeather(res.data || []);
+      setError(null);
+    } catch (err) {
+      if (isAutoRefresh) {
+        toast.error("Weather refresh failed", {
+          description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+        });
+      } else {
+        setError(err);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    weatherAPI.getAll().then(res => setWeather(res.data || [])).catch(() => {}).finally(() => setLoading(false));
+    fetchData();
   }, []);
 
-  if (loading) return <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{[...Array(5)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-40 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}</div>;
+  if (loading) {
+    return <LoadingState label="Loading weather data..." />;
+  }
+
+  if (error && weather.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load weather data"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="weather-page">
       {weather.length === 0 ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground"><Cloud className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No weather data. Seed zones first.</p></CardContent></Card>
+        <EmptyState
+          icon={Cloud}
+          title="No weather data"
+          description="Seed zones first to start collecting weather telemetry."
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {weather.map((w, i) => {

@@ -12,6 +12,8 @@ import { droneAPI, zoneAPI } from "../lib/api";
 import { getStatusColor, cn } from "../lib/utils";
 import { Plane, Battery, MapPin, Plus, Rocket, RefreshCw } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function DroneFleet() {
   const { user } = useAuth();
@@ -19,6 +21,7 @@ export default function DroneFleet() {
   const [drones, setDrones] = useState([]);
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
@@ -26,19 +29,31 @@ export default function DroneFleet() {
   const [deployForm, setDeployForm] = useState({ drone_ids: [], zone_id: "", mission_type: "monitoring" });
   const [selected, setSelected] = useState([]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  // `isAutoRefresh` toasts the error instead of replacing the working
+  // grid with an ErrorState — same pattern as Dashboard.
+  const fetchData = async ({ isAutoRefresh = false } = {}) => {
+    if (!isAutoRefresh) setLoading(true);
     try {
       const [d, z] = await Promise.all([droneAPI.getAll(), zoneAPI.getAll()]);
       setDrones(d.data || []);
       setZones(z.data || []);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+      setError(null);
+    } catch (err) {
+      if (isAutoRefresh) {
+        toast.error("Fleet refresh failed", {
+          description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+        });
+      } else {
+        setError(err);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(() => fetchData({ isAutoRefresh: true }), 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -49,17 +64,28 @@ export default function DroneFleet() {
       await droneAPI.create(newDrone);
       setCreateOpen(false);
       setNewDrone({ name: "", status: "idle" });
+      toast.success("Drone created", { description: newDrone.name });
       fetchData();
-    } catch {}
+    } catch (err) {
+      toast.error("Couldn't create drone", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDeploy = async () => {
     try {
       await droneAPI.deploy({ ...deployForm, drone_ids: selected });
+      const count = selected.length;
       setDeployOpen(false);
       setSelected([]);
+      toast.success(`Deployed ${count} drone${count === 1 ? "" : "s"}`);
       fetchData();
-    } catch {}
+    } catch (err) {
+      toast.error("Deployment failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const toggleSelect = (id) => {
@@ -116,9 +142,28 @@ export default function DroneFleet() {
 
       {/* Drone Grid */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {[...Array(8)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-32 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4" data-testid="drone-fleet-loading">
+          {[...Array(8)].map((_, i) => <SkeletonCard key={i} />)}
         </div>
+      ) : error && drones.length === 0 ? (
+        <ErrorState
+          title="Couldn't load the fleet"
+          error={error}
+          onRetry={() => { setError(null); fetchData(); }}
+        />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={Plane}
+          title={filter === "all" ? "No drones registered" : `No drones in "${filter}" status`}
+          description={filter === "all"
+            ? "Add a drone to start building the aerial fleet."
+            : "Switch the filter or wait for fleet status to update."}
+          action={canWrite && filter === "all" ? (
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />Add Drone
+            </Button>
+          ) : null}
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {filtered.map((drone) => (

@@ -4,15 +4,31 @@ import { Badge } from "../components/ui/badge";
 import { droneAPI } from "../lib/api";
 import { Camera, Video, RefreshCw } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function DroneCameraFeeds() {
   const [feeds, setFeeds] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const fetchFeeds = async () => {
-    setLoading(true);
-    try { const res = await droneAPI.getFeeds(); setFeeds(res.data || []); }
-    catch {} finally { setLoading(false); }
+  const fetchFeeds = async ({ isAutoRefresh = false } = {}) => {
+    if (!isAutoRefresh) setLoading(true);
+    try {
+      const res = await droneAPI.getFeeds();
+      setFeeds(res.data || []);
+      setError(null);
+    } catch (err) {
+      if (isAutoRefresh) {
+        toast.error("Feed refresh failed", {
+          description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+        });
+      } else {
+        setError(err);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { fetchFeeds(); }, []);
@@ -25,13 +41,19 @@ export default function DroneCameraFeeds() {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[...Array(4)].map((_, i) => <Card key={i}><CardContent className="p-0"><div className="h-48 bg-muted animate-pulse" /></CardContent></Card>)}
-        </div>
+        <LoadingState label="Loading drone feeds..." />
+      ) : error && feeds.length === 0 ? (
+        <ErrorState
+          title="Couldn't load drone feeds"
+          error={error}
+          onRetry={() => { setError(null); fetchFeeds(); }}
+        />
       ) : feeds.length === 0 ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <Camera className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No active drone feeds. Deploy drones to see camera feeds.</p>
-        </CardContent></Card>
+        <EmptyState
+          icon={Camera}
+          title="No active drone feeds"
+          description="Deploy drones to see live camera feeds from the field."
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {feeds.map((feed, i) => (

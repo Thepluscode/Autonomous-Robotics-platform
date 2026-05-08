@@ -9,25 +9,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { patrolAPI, droneAPI, zoneAPI } from "../lib/api";
 import { formatDateTime, getStatusColor } from "../lib/utils";
 import { Route, Plus, Play, Pause, CheckCircle, Trash2, Loader2, MapPin, Clock, Plane } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState, SkeletonRow } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function PatrolScheduling() {
   const [patrols, setPatrols] = useState([]);
   const [drones, setDrones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [form, setForm] = useState({ name: "", drone_ids: [], schedule_type: "daily", optimization_priority: "balanced" });
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [p, d] = await Promise.all([patrolAPI.getAll(), droneAPI.getAll()]);
-        setPatrols(p.data || []);
-        setDrones(d.data || []);
-      } catch {} finally { setLoading(false); }
-    };
-    fetch();
-  }, []);
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [p, d] = await Promise.all([patrolAPI.getAll(), droneAPI.getAll()]);
+      setPatrols(p.data || []);
+      setDrones(d.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -36,8 +44,15 @@ export default function PatrolScheduling() {
       const p = await patrolAPI.getAll();
       setPatrols(p.data || []);
       setGenerateOpen(false);
+      toast.success("Patrol generated", { description: form.name });
       setForm({ name: "", drone_ids: [], schedule_type: "daily", optimization_priority: "balanced" });
-    } catch {} finally { setGenerating(false); }
+    } catch (err) {
+      toast.error("Couldn't generate patrol", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const handleStatusUpdate = async (id, status) => {
@@ -46,11 +61,24 @@ export default function PatrolScheduling() {
       else await patrolAPI.update(id, { status });
       const p = await patrolAPI.getAll();
       setPatrols(p.data || []);
-    } catch {}
+      toast.success(`Patrol ${status}`);
+    } catch (err) {
+      toast.error("Couldn't update patrol", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDelete = async (id) => {
-    try { await patrolAPI.delete(id); setPatrols(prev => prev.filter(p => p.id !== id)); } catch {}
+    try {
+      await patrolAPI.delete(id);
+      setPatrols(prev => prev.filter(p => p.id !== id));
+      toast.success("Patrol deleted");
+    } catch (err) {
+      toast.error("Couldn't delete patrol", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const toggleDrone = (id) => {
@@ -70,9 +98,24 @@ export default function PatrolScheduling() {
       </div>
 
       {loading ? (
-        <div className="space-y-4">{[...Array(3)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-32 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}</div>
+        <SkeletonRow count={3} />
+      ) : error && patrols.length === 0 ? (
+        <ErrorState
+          title="Couldn't load patrols"
+          error={error}
+          onRetry={() => { setError(null); fetchData(); }}
+        />
       ) : patrols.length === 0 ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground"><Route className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No patrols scheduled. Generate an AI-optimized patrol.</p></CardContent></Card>
+        <EmptyState
+          icon={Route}
+          title="No patrols scheduled"
+          description="Generate an AI-optimized patrol to dispatch drones across critical zones."
+          action={
+            <Button size="sm" onClick={() => setGenerateOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />Generate Patrol
+            </Button>
+          }
+        />
       ) : (
         <div className="space-y-4">
           {patrols.map(patrol => (

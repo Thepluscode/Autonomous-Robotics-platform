@@ -23,6 +23,7 @@ import {
   Waves,
   Wrench,
 } from "lucide-react";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
 
 const roboticsDomains = [
   {
@@ -168,34 +169,50 @@ export default function RoboticsCommandCenter() {
   const [robots, setRobots] = useState([]);
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [activeDomain, setActiveDomain] = useState("aerial");
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [droneRes, robotRes, zoneRes] = await Promise.all([
+        droneAPI.getAll(),
+        robotAPI.getAll(),
+        zoneAPI.getAll(),
+      ]);
+      setDrones(droneRes.data || []);
+      setRobots(robotRes.data || []);
+      setZones(zoneRes.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([droneAPI.getAll(), robotAPI.getAll(), zoneAPI.getAll()])
-      .then(([droneRes, robotRes, zoneRes]) => {
-        if (cancelled) return;
-        setDrones(droneRes.data || []);
-        setRobots(robotRes.data || []);
-        setZones(zoneRes.data || []);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDrones([]);
-          setRobots([]);
-          setZones([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+    (async () => {
+      if (cancelled) return;
+      await fetchData();
+    })();
     return () => {
       cancelled = true;
     };
   }, []);
 
   const assetsByDomain = useMemo(() => buildRobotAssets(robots, drones, zones), [robots, drones, zones]);
+
+  if (error && drones.length === 0 && robots.length === 0 && zones.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load the robotics platform"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   const domain = roboticsDomains.find((item) => item.id === activeDomain) || roboticsDomains[0];
   const assets = assetsByDomain[domain.id] || [];
@@ -322,8 +339,16 @@ export default function RoboticsCommandCenter() {
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" data-testid="robotics-asset-grid">
               {loading ? (
                 Array.from({ length: 6 }).map((_, index) => (
-                  <div key={index} className="h-32 rounded-sm border border-border bg-muted/40 animate-pulse" />
+                  <SkeletonCard key={index} />
                 ))
+              ) : assets.length === 0 ? (
+                <div className="md:col-span-2 xl:col-span-3">
+                  <EmptyState
+                    icon={Bot}
+                    title={`No ${domain.label.toLowerCase()} online`}
+                    description="Switch to another domain or wait for assets to come online."
+                  />
+                </div>
               ) : (
                 assets.map((asset) => (
                   <div key={asset.id} className="rounded-sm border border-border bg-background p-4" data-testid={`robotics-asset-${asset.id.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>

@@ -4,6 +4,8 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { reportAPI } from "../lib/api";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 import { Download, FileText, BarChart3, Database } from "lucide-react";
 
 export default function Reports() {
@@ -11,9 +13,22 @@ export default function Reports() {
   const [exportData, setExportData] = useState(null);
   const [exportType, setExportType] = useState("zones");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchSummary = async () => {
+    try {
+      const res = await reportAPI.getSummary();
+      setSummary(res.data);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    reportAPI.getSummary().then(res => setSummary(res.data)).catch(() => {}).finally(() => setLoading(false));
+    fetchSummary();
   }, []);
 
   const handleExport = async (type, format) => {
@@ -26,13 +41,33 @@ export default function Reports() {
         a.href = url;
         a.download = res.data.filename || `${type}_export.csv`;
         a.click();
+        toast.success("Export ready", { description: `${type}.csv downloaded` });
       } else {
         setExportData(res.data);
+        toast.success("Export ready", { description: `${type} (${res.data?.count ?? 0} records)` });
       }
-    } catch {}
+    } catch (err) {
+      toast.error("Export failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const reportTypes = ["zones", "drones", "patrols", "species", "alerts"];
+
+  if (loading) {
+    return <LoadingState label="Loading reports..." />;
+  }
+
+  if (error && !summary) {
+    return (
+      <ErrorState
+        title="Couldn't load reports"
+        error={error}
+        onRetry={() => { setError(null); setLoading(true); fetchSummary(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="reports-page">
@@ -43,7 +78,13 @@ export default function Reports() {
         </TabsList>
 
         <TabsContent value="summary" className="space-y-4">
-          {loading ? <div className="h-40 bg-muted animate-pulse rounded-sm" /> : summary && (
+          {!summary ? (
+            <EmptyState
+              icon={BarChart3}
+              title="No summary available"
+              description="Seed the platform or wait for the first report to generate."
+            />
+          ) : (
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[

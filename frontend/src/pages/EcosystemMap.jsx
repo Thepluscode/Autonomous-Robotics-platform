@@ -10,6 +10,8 @@ import { formatPercent, getStatusColor } from "../lib/utils";
 import useWebSocket from "../hooks/useWebSocket";
 import { MapContainer, TileLayer, CircleMarker, Circle, Polyline, Popup, useMap } from "react-leaflet";
 import { AlertTriangle, Battery, Bot, Box, Crosshair, Layers, MapPin, Map as MapIcon, Plane, RadioTower, Route, SatelliteDish, Shield, ShieldCheck } from "lucide-react";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
+import { toast } from "../lib/toast";
 import "leaflet/dist/leaflet.css";
 
 const HEALTH_COLORS = {
@@ -714,28 +716,54 @@ export default function EcosystemMap() {
   const [viewMode, setViewMode] = useState("3d");
   const [selected, setSelected] = useState(null);
   const [trails, setTrails] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const { lastMessage, isConnected } = useWebSocket();
 
+  const fetchAll = async ({ isAutoRefresh = false } = {}) => {
+    if (!isAutoRefresh) setLoading(true);
+    try {
+      const [d, z, p, s, g] = await Promise.all([
+        droneAPI.getAll(),
+        zoneAPI.getAll(),
+        patrolAPI.getAll(),
+        sensorAPI.getAll(),
+        geofenceAPI.getAll(),
+      ]);
+      setDrones(d.data || []);
+      setZones(z.data || []);
+      setPatrols(p.data || []);
+      setSensors(s.data || []);
+      setGeofences(g.data || []);
+      setError(null);
+    } catch (err) {
+      if (isAutoRefresh) {
+        toast.error("Map refresh failed", {
+          description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+        });
+      } else {
+        setError(err);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshDronePositions = async () => {
+    try {
+      const res = await droneAPI.getAll();
+      setDrones(res.data || []);
+    } catch (err) {
+      toast.error("Drone telemetry refresh failed", {
+        description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+      });
+    }
+  };
+
   useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [d, z, p, s, g] = await Promise.all([
-          droneAPI.getAll(),
-          zoneAPI.getAll(),
-          patrolAPI.getAll(),
-          sensorAPI.getAll(),
-          geofenceAPI.getAll(),
-        ]);
-        setDrones(d.data || []);
-        setZones(z.data || []);
-        setPatrols(p.data || []);
-        setSensors(s.data || []);
-        setGeofences(g.data || []);
-      } catch {}
-    };
-    fetch();
+    fetchAll();
     const interval = setInterval(() => {
-      droneAPI.getAll().then(res => setDrones(res.data || [])).catch(() => {});
+      refreshDronePositions();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -771,6 +799,42 @@ export default function EcosystemMap() {
     const firstWaypoint = selected?.item?.waypoints?.[0];
     return firstWaypoint ? [firstWaypoint.latitude, firstWaypoint.longitude] : null;
   }, [selected]);
+
+  if (loading) {
+    return (
+      <div className="space-y-4" data-testid="ecosystem-map-loading">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {[...Array(5)].map((_, i) => <SkeletonCard key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <SkeletonCard className="h-[70vh]" />
+          <SkeletonCard className="h-[70vh]" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error && drones.length === 0 && zones.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load the ecosystem map"
+        error={error}
+        onRetry={() => { setError(null); fetchAll(); }}
+      />
+    );
+  }
+
+  const hasMapData = drones.length > 0 || zones.length > 0 || sensors.length > 0 || patrols.length > 0 || geofences.length > 0;
+
+  if (!hasMapData) {
+    return (
+      <EmptyState
+        icon={MapPin}
+        title="No spatial data yet"
+        description="Seed zones, drones, sensors, and patrols from the dashboard to populate the map."
+      />
+    );
+  }
 
   return (
     <div className="space-y-4" data-testid="ecosystem-map-page">

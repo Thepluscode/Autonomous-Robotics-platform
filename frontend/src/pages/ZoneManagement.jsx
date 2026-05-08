@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { zoneAPI } from "../lib/api";
 import { formatPercent, getPriorityColor, cn } from "../lib/utils";
 import { MapPin, Plus, Edit, Trash2, Leaf, FlaskConical, PawPrint, Trees } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 function MetricBar({ label, value, icon: Icon, color }) {
   return (
@@ -26,29 +28,65 @@ function MetricBar({ label, value, icon: Icon, color }) {
 export default function ZoneManagement() {
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editZone, setEditZone] = useState(null);
   const [form, setForm] = useState({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5 });
 
   const fetchData = async () => {
     setLoading(true);
-    try { const res = await zoneAPI.getAll(); setZones(res.data || []); }
-    catch {} finally { setLoading(false); }
+    try {
+      const res = await zoneAPI.getAll();
+      setZones(res.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { fetchData(); }, []);
 
   const handleCreate = async () => {
-    try { await zoneAPI.create(form); setCreateOpen(false); resetForm(); fetchData(); } catch {}
+    try {
+      await zoneAPI.create(form);
+      setCreateOpen(false);
+      resetForm();
+      toast.success("Zone created", { description: form.name });
+      fetchData();
+    } catch (err) {
+      toast.error("Couldn't create zone", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleUpdate = async () => {
-    try { await zoneAPI.update(editZone.id, form); setEditZone(null); resetForm(); fetchData(); } catch {}
+    try {
+      await zoneAPI.update(editZone.id, form);
+      setEditZone(null);
+      resetForm();
+      toast.success("Zone updated", { description: form.name });
+      fetchData();
+    } catch (err) {
+      toast.error("Couldn't update zone", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this zone?")) return;
-    try { await zoneAPI.delete(id); fetchData(); } catch {}
+    try {
+      await zoneAPI.delete(id);
+      toast.success("Zone deleted");
+      fetchData();
+    } catch (err) {
+      toast.error("Couldn't delete zone", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const resetForm = () => setForm({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5 });
@@ -102,9 +140,24 @@ export default function ZoneManagement() {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[...Array(6)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-40 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}
-        </div>
+        <LoadingState label="Loading zones..." />
+      ) : error && zones.length === 0 ? (
+        <ErrorState
+          title="Couldn't load zones"
+          error={error}
+          onRetry={() => { setError(null); fetchData(); }}
+        />
+      ) : zones.length === 0 ? (
+        <EmptyState
+          icon={MapPin}
+          title="No zones monitored"
+          description="Add a rewilding zone to start tracking biodiversity, soil, and vegetation health."
+          action={
+            <Button size="sm" onClick={() => { resetForm(); setCreateOpen(true); }}>
+              <Plus className="w-4 h-4 mr-1" />Add Zone
+            </Button>
+          }
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {zones.map((zone) => (

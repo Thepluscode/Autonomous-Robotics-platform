@@ -5,24 +5,31 @@ import { dashboardAPI, sensorAPI, zoneAPI } from "../lib/api";
 import { formatPercent } from "../lib/utils";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend } from "recharts";
 import { BarChart3, Radio, MapPin } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
 
 export default function Analytics() {
   const [trends, setTrends] = useState(null);
   const [zones, setZones] = useState([]);
   const [sensors, setSensors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [t, z, s] = await Promise.all([dashboardAPI.getTrends(), zoneAPI.getAll(), sensorAPI.getAll()]);
-        setTrends(t.data);
-        setZones(z.data || []);
-        setSensors(s.data || []);
-      } catch {} finally { setLoading(false); }
-    };
-    fetch();
-  }, []);
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [t, z, s] = await Promise.all([dashboardAPI.getTrends(), zoneAPI.getAll(), sensorAPI.getAll()]);
+      setTrends(t.data);
+      setZones(z.data || []);
+      setSensors(s.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
 
   const missionData = trends?.drone_missions || [];
   const radarData = zones.slice(0, 6).map(z => ({
@@ -38,7 +45,17 @@ export default function Analytics() {
     soil: Math.round((trends.soil_health?.[i]?.value || 0) * 100),
   })) || [];
 
-  if (loading) return <div className="h-64 bg-muted animate-pulse rounded-sm" />;
+  if (loading) return <LoadingState label="Loading analytics..." />;
+
+  if (error && !trends && zones.length === 0 && sensors.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load analytics"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="analytics-page">
@@ -108,7 +125,14 @@ export default function Analytics() {
                     </RadarChart>
                   </ResponsiveContainer>
                 </div>
-              ) : <p className="text-sm text-muted-foreground text-center py-8">No zone data available</p>}
+              ) : (
+                <EmptyState
+                  icon={MapPin}
+                  title="No zone data available"
+                  description="Add zones to compare biodiversity, soil, and vegetation across the rewilding portfolio."
+                  className="py-6"
+                />
+              )}
             </CardContent>
           </Card>
 
@@ -154,7 +178,14 @@ export default function Analytics() {
                     </tbody>
                   </table>
                 </div>
-              ) : <p className="text-sm text-muted-foreground text-center py-8">No sensors deployed yet</p>}
+              ) : (
+                <EmptyState
+                  icon={Radio}
+                  title="No sensors deployed yet"
+                  description="Sensor telemetry will appear here once field hardware is registered."
+                  className="py-6"
+                />
+              )}
             </CardContent>
           </Card>
         </TabsContent>

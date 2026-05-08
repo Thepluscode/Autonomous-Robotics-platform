@@ -48,6 +48,8 @@ import {
 } from "../lib/api";
 import { cn } from "../lib/utils";
 import useWebSocket from "../hooks/useWebSocket";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
+import { toast } from "../lib/toast";
 
 const priorityWeight = {
   critical: 28,
@@ -636,12 +638,7 @@ function MissionTheatre3D({ mission, plan, selectedZone, robots, drones, sensors
 function LoadingSkeleton() {
   return (
     <div className="grid gap-4 lg:grid-cols-4" data-testid="mission-control-loading">
-      {[0, 1, 2, 3].map((item) => (
-        <div key={item} className="h-32 rounded-sm border border-border bg-card p-4">
-          <div className="mb-4 h-3 w-24 animate-pulse rounded-sm bg-muted" />
-          <div className="h-12 animate-pulse rounded-sm bg-muted" />
-        </div>
-      ))}
+      {[0, 1, 2, 3].map((item) => <SkeletonCard key={item} />)}
     </div>
   );
 }
@@ -1160,36 +1157,51 @@ export default function MissionControl() {
   const [targetId, setTargetId] = useState(null);
   const [missionRequest, setMissionRequest] = useState({ missionType: "patrol", maxRobots: 5, notes: "" });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [launchState, setLaunchState] = useState({ status: "idle", message: "" });
+
+  // `Promise.allSettled` lets a single bad endpoint not blank the whole
+  // surface, but we still need to surface a true network outage. If every
+  // endpoint rejects we treat the page as failed and show ErrorState.
+  const fetchMissionData = async () => {
+    setLoading(true);
+    const results = await Promise.allSettled([
+      zoneAPI.getAll(),
+      robotAPI.getAll(),
+      droneAPI.getAll(),
+      sensorAPI.getAll(),
+      geofenceAPI.getAll(),
+      alertAPI.getAll(false),
+      patrolAPI.getAll(),
+      missionAPI.getAll(),
+    ]);
+    const [zoneRes, robotRes, droneRes, sensorRes, fenceRes, alertRes, patrolRes, missionRes] = results;
+    setZones(zoneRes.status === "fulfilled" ? zoneRes.value.data || [] : []);
+    setRobots(robotRes.status === "fulfilled" ? robotRes.value.data || [] : []);
+    setDrones(droneRes.status === "fulfilled" ? droneRes.value.data || [] : []);
+    setSensors(sensorRes.status === "fulfilled" ? sensorRes.value.data || [] : []);
+    setGeofences(fenceRes.status === "fulfilled" ? fenceRes.value.data || [] : []);
+    setAlerts(alertRes.status === "fulfilled" ? alertRes.value.data || [] : []);
+    setPatrols(patrolRes.status === "fulfilled" ? patrolRes.value.data || [] : []);
+    const savedMissions = missionRes.status === "fulfilled" ? missionRes.value.data || [] : [];
+    setMissions(savedMissions);
+    setActiveMission(savedMissions.find((mission) => mission.status === "active") || savedMissions[0] || null);
+
+    const allFailed = results.every((r) => r.status === "rejected");
+    if (allFailed) {
+      setError(results[0].reason || new Error("Mission data fetch failed"));
+    } else {
+      setError(null);
+    }
+    setLoading(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
-    const fetchMissionData = async () => {
-      setLoading(true);
-      const [zoneRes, robotRes, droneRes, sensorRes, fenceRes, alertRes, patrolRes, missionRes] = await Promise.allSettled([
-        zoneAPI.getAll(),
-        robotAPI.getAll(),
-        droneAPI.getAll(),
-        sensorAPI.getAll(),
-        geofenceAPI.getAll(),
-        alertAPI.getAll(false),
-        patrolAPI.getAll(),
-        missionAPI.getAll(),
-      ]);
+    (async () => {
       if (cancelled) return;
-      setZones(zoneRes.status === "fulfilled" ? zoneRes.value.data || [] : []);
-      setRobots(robotRes.status === "fulfilled" ? robotRes.value.data || [] : []);
-      setDrones(droneRes.status === "fulfilled" ? droneRes.value.data || [] : []);
-      setSensors(sensorRes.status === "fulfilled" ? sensorRes.value.data || [] : []);
-      setGeofences(fenceRes.status === "fulfilled" ? fenceRes.value.data || [] : []);
-      setAlerts(alertRes.status === "fulfilled" ? alertRes.value.data || [] : []);
-      setPatrols(patrolRes.status === "fulfilled" ? patrolRes.value.data || [] : []);
-      const savedMissions = missionRes.status === "fulfilled" ? missionRes.value.data || [] : [];
-      setMissions(savedMissions);
-      setActiveMission(savedMissions.find((mission) => mission.status === "active") || savedMissions[0] || null);
-      setLoading(false);
-    };
-    fetchMissionData();
+      await fetchMissionData();
+    })();
     return () => {
       cancelled = true;
     };
@@ -1244,6 +1256,7 @@ export default function MissionControl() {
     const zoneId = targetId || rankedZones[0]?.zone?.id;
     if (!zoneId) {
       setLaunchState({ status: "failed", message: "Seed a zone before generating a mission." });
+      toast.warning("Seed a zone first", { description: "Mission generation needs at least one zone." });
       return;
     }
     setLaunchState({ status: "generating", message: "Requesting backend mission plan..." });
@@ -1265,10 +1278,14 @@ export default function MissionControl() {
           ? "Backend returned a draft mission. Resolve readiness blockers before authorization."
           : `Mission ${mission.id} generated by backend and ready for authorization.`,
       });
-    } catch (error) {
+      toast.success("Mission generated", { description: `Mission ${mission.id} (${mission.status}).` });
+    } catch (err) {
       setLaunchState({
         status: "failed",
-        message: error.response?.data?.detail || "Mission generation failed.",
+        message: err.response?.data?.detail || "Mission generation failed.",
+      });
+      toast.error("Mission generation failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
       });
     }
   };
@@ -1276,6 +1293,7 @@ export default function MissionControl() {
   const handleLaunch = async () => {
     if (!activeMission) {
       setLaunchState({ status: "failed", message: "Generate a backend mission before authorization." });
+      toast.warning("Generate a mission first");
       return;
     }
     setLaunchState({ status: "launching", message: "Authorizing autonomous mission package..." });
@@ -1288,10 +1306,14 @@ export default function MissionControl() {
         status: "launched",
         message: updated.launch_result?.message || `Mission ${updated.id} launched.`,
       });
-    } catch (error) {
+      toast.success("Mission authorized", { description: `Mission ${updated.id} launched.` });
+    } catch (err) {
       setLaunchState({
         status: "failed",
-        message: error.response?.data?.detail || "Launch authorization failed.",
+        message: err.response?.data?.detail || "Launch authorization failed.",
+      });
+      toast.error("Launch authorization failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
       });
     }
   };
@@ -1305,8 +1327,12 @@ export default function MissionControl() {
       setActiveMission(updated);
       setMissions((current) => mergeMission(current, updated));
       setLaunchState({ status: "aborted", message: `Mission ${updated.id} aborted.` });
-    } catch (error) {
-      setLaunchState({ status: "failed", message: error.response?.data?.detail || "Abort failed." });
+      toast.success("Mission aborted", { description: `Mission ${updated.id} stopped.` });
+    } catch (err) {
+      setLaunchState({ status: "failed", message: err.response?.data?.detail || "Abort failed." });
+      toast.error("Abort failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
     }
   };
 
@@ -1319,8 +1345,12 @@ export default function MissionControl() {
       setActiveMission(updated);
       setMissions((current) => mergeMission(current, updated));
       setLaunchState({ status: "completed", message: updated.post_mission_summary || `Mission ${updated.id} completed.` });
-    } catch (error) {
-      setLaunchState({ status: "failed", message: error.response?.data?.detail || "Completion failed." });
+      toast.success("Mission completed", { description: `Mission ${updated.id} report generated.` });
+    } catch (err) {
+      setLaunchState({ status: "failed", message: err.response?.data?.detail || "Completion failed." });
+      toast.error("Completion failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
     }
   };
 
@@ -1338,13 +1368,23 @@ export default function MissionControl() {
     );
   }
 
+  if (error && zones.length === 0 && robots.length === 0 && drones.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load Mission Control"
+        error={error}
+        onRetry={() => { setError(null); fetchMissionData(); }}
+      />
+    );
+  }
+
   if (!selectedZone && !plan) {
     return (
-      <div className="rounded-sm border border-border bg-card p-8 text-center" data-testid="mission-control-empty">
-        <Rocket className="mx-auto mb-3 h-10 w-10 text-muted-foreground" strokeWidth={1.5} />
-        <p className="font-heading text-xl font-semibold">No mission telemetry available</p>
-        <p className="mt-2 text-sm text-muted-foreground">Seed zones and robots before opening Mission Control.</p>
-      </div>
+      <EmptyState
+        icon={Rocket}
+        title="No mission telemetry available"
+        description="Seed zones and robots before opening Mission Control."
+      />
     );
   }
 

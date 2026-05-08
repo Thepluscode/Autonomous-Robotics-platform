@@ -8,22 +8,33 @@ import { forecastAPI, zoneAPI } from "../lib/api";
 import { formatDateTime } from "../lib/utils";
 import { TrendingUp, TrendingDown, Minus, Loader2, BarChart3 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function EcosystemForecasting() {
   const [zones, setZones] = useState([]);
   const [forecasts, setForecasts] = useState([]);
   const [selectedZone, setSelectedZone] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [z, f] = await Promise.all([zoneAPI.getAll(), forecastAPI.getAll()]);
+      setZones(z.data || []);
+      setForecasts(f.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [z, f] = await Promise.all([zoneAPI.getAll(), forecastAPI.getAll()]);
-        setZones(z.data || []);
-        setForecasts(f.data || []);
-      } catch {}
-    };
-    fetch();
+    fetchData();
   }, []);
 
   const handleGenerate = async () => {
@@ -33,7 +44,12 @@ export default function EcosystemForecasting() {
       await forecastAPI.generate(selectedZone);
       const f = await forecastAPI.getAll();
       setForecasts(f.data || []);
-    } catch {} finally { setGenerating(false); }
+      toast.success("Forecast generated", { description: "30/60/90-day predictions are ready." });
+    } catch (err) {
+      toast.error("Forecast generation failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    } finally { setGenerating(false); }
   };
 
   const trendIcon = (trend) => {
@@ -53,6 +69,20 @@ export default function EcosystemForecasting() {
     if (!groupedForecasts[f.zone_id]) groupedForecasts[f.zone_id] = { zone_name: f.zone_name, forecasts: [] };
     groupedForecasts[f.zone_id].forecasts.push(f);
   });
+
+  if (loading) {
+    return <LoadingState label="Loading forecasts..." />;
+  }
+
+  if (error && forecasts.length === 0 && zones.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load forecasts"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="forecasting-page">
@@ -127,9 +157,11 @@ export default function EcosystemForecasting() {
       })}
 
       {Object.keys(groupedForecasts).length === 0 && (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <TrendingUp className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No forecasts generated yet. Select a zone and generate predictions.</p>
-        </CardContent></Card>
+        <EmptyState
+          icon={TrendingUp}
+          title="No forecasts generated yet"
+          description="Select a zone above and click Generate to produce 30/60/90-day predictions."
+        />
       )}
     </div>
   );

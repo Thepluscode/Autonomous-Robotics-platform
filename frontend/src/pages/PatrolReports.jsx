@@ -4,23 +4,56 @@ import { Badge } from "../components/ui/badge";
 import { patrolAPI } from "../lib/api";
 import { formatDateTime } from "../lib/utils";
 import { FileText, Leaf, MapPin, Bug, AlertTriangle } from "lucide-react";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
 
 export default function PatrolReports() {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchReports = async () => {
+    setLoading(true);
+    try {
+      const res = await patrolAPI.getReports();
+      setReports(res.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    patrolAPI.getReports().then(res => setReports(res.data || [])).catch(() => {}).finally(() => setLoading(false));
+    fetchReports();
   }, []);
 
-  if (loading) return <div className="space-y-4">{[...Array(3)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-24 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}</div>;
+  if (loading) {
+    return (
+      <div className="space-y-4" data-testid="patrol-reports-loading">
+        {[...Array(3)].map((_, i) => <SkeletonCard key={i} />)}
+      </div>
+    );
+  }
+
+  if (error && reports.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load patrol reports"
+        error={error}
+        onRetry={() => { setError(null); fetchReports(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="patrol-reports-page">
       {reports.length === 0 ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <FileText className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No patrol reports yet. Complete a patrol to generate a report.</p>
-        </CardContent></Card>
+        <EmptyState
+          icon={FileText}
+          title="No patrol reports yet"
+          description="Complete a patrol to generate a report."
+        />
       ) : reports.map((report, i) => (
         <Card key={report.id || i} data-testid={`report-card-${i}`}>
           <CardHeader className="pb-2">

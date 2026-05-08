@@ -9,16 +9,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { taskAPI } from "../lib/api";
 import { formatDateTime, getStatusColor } from "../lib/utils";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 import { Users, Plus, CheckCircle, Clock, AlertCircle, Trash2 } from "lucide-react";
 
 export default function TeamCollaboration() {
   const [tasks, setTasks] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [form, setForm] = useState({ title: "", description: "", priority: "medium" });
 
+  const fetchTasks = async () => {
+    try {
+      const res = await taskAPI.getAll();
+      setTasks(res.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    taskAPI.getAll().then(res => setTasks(res.data || [])).catch(() => {}).finally(() => setLoading(false));
+    fetchTasks();
   }, []);
 
   const handleCreate = async () => {
@@ -27,16 +42,39 @@ export default function TeamCollaboration() {
       const t = await taskAPI.getAll();
       setTasks(t.data || []);
       setCreateOpen(false);
+      const title = form.title;
       setForm({ title: "", description: "", priority: "medium" });
-    } catch {}
+      toast.success("Task created", { description: title });
+    } catch (err) {
+      toast.error("Couldn't create task", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleStatusUpdate = async (id, status) => {
-    try { await taskAPI.update(id, status); const t = await taskAPI.getAll(); setTasks(t.data || []); } catch {}
+    try {
+      await taskAPI.update(id, status);
+      const t = await taskAPI.getAll();
+      setTasks(t.data || []);
+      toast.success("Task updated", { description: `Status: ${status.replace("_", " ")}` });
+    } catch (err) {
+      toast.error("Couldn't update task", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDelete = async (id) => {
-    try { await taskAPI.delete(id); setTasks(prev => prev.filter(t => t.id !== id)); } catch {}
+    try {
+      await taskAPI.delete(id);
+      setTasks(prev => prev.filter(t => t.id !== id));
+      toast.success("Task deleted");
+    } catch (err) {
+      toast.error("Couldn't delete task", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const statusIcon = (status) => ({
@@ -47,6 +85,20 @@ export default function TeamCollaboration() {
 
   const tasksByStatus = (status) => tasks.filter(t => t.status === status);
 
+  if (loading) {
+    return <LoadingState label="Loading tasks..." />;
+  }
+
+  if (error && tasks.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load tasks"
+        error={error}
+        onRetry={() => { setError(null); setLoading(true); fetchTasks(); }}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6" data-testid="team-page">
       <div className="flex items-center justify-between">
@@ -54,6 +106,18 @@ export default function TeamCollaboration() {
         <Button size="sm" onClick={() => setCreateOpen(true)}><Plus className="w-4 h-4 mr-1" />New Task</Button>
       </div>
 
+      {tasks.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No tasks yet"
+          description="Create the first task to coordinate the field team."
+          action={
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />New Task
+            </Button>
+          }
+        />
+      ) : (
       <Tabs defaultValue="board">
         <TabsList><TabsTrigger value="board">Board View</TabsTrigger><TabsTrigger value="list">List View</TabsTrigger></TabsList>
 
@@ -113,6 +177,7 @@ export default function TeamCollaboration() {
           </Card>
         </TabsContent>
       </Tabs>
+      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>

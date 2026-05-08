@@ -50,6 +50,7 @@ import { Button } from "../components/ui/button";
 import { Progress } from "../components/ui/progress";
 import { publicAPI } from "../lib/api";
 import { cn } from "../lib/utils";
+import { toast } from "../lib/toast";
 
 const fallbackDashboard = {
   overview: {
@@ -1489,6 +1490,9 @@ export default function PublicDashboard() {
 
   useEffect(() => {
     let cancelled = false;
+    // PublicDashboard is unauthenticated and has rich fallback telemetry;
+    // a backend outage degrades to demo mode rather than blocking the page.
+    // Toast the failure so it's not silent, but keep rendering.
     publicAPI.getDashboard()
       .then((res) => {
         if (!cancelled && res.data) {
@@ -1496,8 +1500,12 @@ export default function PublicDashboard() {
           setUsingFallback(false);
         }
       })
-      .catch(() => {
-        if (!cancelled) setUsingFallback(true);
+      .catch((err) => {
+        if (cancelled) return;
+        setUsingFallback(true);
+        toast.warning("Showing demo telemetry", {
+          description: err.response?.data?.detail || err.message || "Live restoration feed unreachable.",
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

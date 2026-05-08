@@ -8,19 +8,35 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { interventionAPI } from "../lib/api";
 import { Zap, Plus, Trash2, Play, AlertTriangle } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function InterventionRules() {
   const [rules, setRules] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [checkResult, setCheckResult] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [form, setForm] = useState({
     name: "", description: "", condition_type: "biodiversity_index", condition_operator: "lt",
     condition_value: 0.4, condition_duration_days: 7, action_type: "deploy_drones", action_config: {},
   });
 
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const res = await interventionAPI.getRules();
+      setRules(res.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    interventionAPI.getRules().then(res => setRules(res.data || [])).catch(() => {}).finally(() => setLoading(false));
+    fetchData();
   }, []);
 
   const handleCreate = async () => {
@@ -29,18 +45,55 @@ export default function InterventionRules() {
       const r = await interventionAPI.getRules();
       setRules(r.data || []);
       setCreateOpen(false);
-    } catch {}
+      toast.success("Rule created", { description: form.name });
+    } catch (err) {
+      toast.error("Couldn't create rule", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleDelete = async (id) => {
-    try { await interventionAPI.deleteRule(id); setRules(prev => prev.filter(r => r.id !== id)); } catch {}
+    try {
+      await interventionAPI.deleteRule(id);
+      setRules(prev => prev.filter(r => r.id !== id));
+      toast.success("Rule deleted");
+    } catch (err) {
+      toast.error("Couldn't delete rule", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const handleCheck = async () => {
-    try { const res = await interventionAPI.check(); setCheckResult(res.data); } catch {}
+    try {
+      const res = await interventionAPI.check();
+      setCheckResult(res.data);
+      toast.success("Check complete", {
+        description: `${res.data?.triggered_count ?? 0} interventions triggered.`,
+      });
+    } catch (err) {
+      toast.error("Check failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
 
   const operatorLabels = { lt: "less than", gt: "greater than", eq: "equals" };
+
+  if (loading) {
+    return <LoadingState label="Loading intervention rules..." />;
+  }
+
+  if (error && rules.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load intervention rules"
+        error={error}
+        onRetry={() => { setError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="intervention-rules-page">
@@ -66,10 +119,17 @@ export default function InterventionRules() {
         </Card>
       )}
 
-      {rules.length === 0 && !loading ? (
-        <Card className="border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <Zap className="w-10 h-10 mx-auto mb-3 opacity-30" /><p>No intervention rules. Create automated triggers for ecosystem protection.</p>
-        </CardContent></Card>
+      {rules.length === 0 ? (
+        <EmptyState
+          icon={Zap}
+          title="No intervention rules"
+          description="Create automated triggers for ecosystem protection."
+          action={
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />Add Rule
+            </Button>
+          }
+        />
       ) : (
         <div className="space-y-3">
           {rules.map(rule => (

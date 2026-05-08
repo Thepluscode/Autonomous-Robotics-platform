@@ -6,6 +6,8 @@ import { Progress } from "../components/ui/progress";
 import { dashboardAPI, alertAPI, seedAPI, zoneAPI, droneAPI } from "../lib/api";
 import useWebSocket from "../hooks/useWebSocket";
 import { formatDateTime } from "../lib/utils";
+import { EmptyState, ErrorState, SkeletonCard } from "../components/state";
+import { toast } from "../lib/toast";
 import {
   Leaf, MapPin, Radio, AlertTriangle, Database, TrendingUp,
   Activity, Zap, Wifi, WifiOff, Bot, Bug, Wind, BarChart3, ShieldCheck, Crosshair, Battery
@@ -40,13 +42,17 @@ export default function Dashboard() {
   const [zones, setZones] = useState([]);
   const [drones, setDrones] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [seeding, setSeeding] = useState(false);
   const [tick, setTick] = useState(0);
   const { isConnected, lastMessage } = useWebSocket();
   const intervalRef = useRef(null);
 
-  // Core data fetch
-  const fetchAll = async () => {
+  // Core data fetch. The previous `catch {}` swallowed network failures
+  // silently — the dashboard would freeze on stale data with no signal
+  // to the operator. Now: capture the error, surface it through ErrorState
+  // on the gate-fetch and toast it on auto-refresh failures.
+  const fetchAll = async ({ isAutoRefresh = false } = {}) => {
     try {
       const [s, a, z, d] = await Promise.all([
         dashboardAPI.getStats(),
@@ -58,14 +64,28 @@ export default function Dashboard() {
       setAlerts(a.data || []);
       setZones(z.data || []);
       setDrones(d.data || []);
-    } catch {} finally { setLoading(false); }
+      setError(null);
+    } catch (err) {
+      if (isAutoRefresh) {
+        // Don't blow away the working dashboard on a single bad refresh —
+        // toast it so the user sees something happened, but keep the
+        // last-known-good data on screen.
+        toast.error("Live refresh failed", {
+          description: err.response?.data?.detail || err.message || "Couldn't reach the API",
+        });
+      } else {
+        setError(err);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Initial + auto-refresh every 5s
   useEffect(() => {
     fetchAll();
     intervalRef.current = setInterval(() => {
-      fetchAll();
+      fetchAll({ isAutoRefresh: true });
       setTick(t => t + 1);
     }, REFRESH_INTERVAL);
     return () => clearInterval(intervalRef.current);
@@ -73,12 +93,22 @@ export default function Dashboard() {
 
   // React to WebSocket messages
   useEffect(() => {
-    if (lastMessage) fetchAll();
+    if (lastMessage) fetchAll({ isAutoRefresh: true });
   }, [lastMessage]);
 
   const handleSeed = async () => {
     setSeeding(true);
-    try { await seedAPI.seed(); await fetchAll(); } catch {} finally { setSeeding(false); }
+    try {
+      await seedAPI.seed();
+      await fetchAll();
+      toast.success("Demo data seeded", { description: "Zones, drones, and sensors are ready." });
+    } catch (err) {
+      toast.error("Seeding failed", {
+        description: err.response?.data?.detail || err.message || "Couldn't seed demo data.",
+      });
+    } finally {
+      setSeeding(false);
+    }
   };
 
   // Derived live data
@@ -108,11 +138,25 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-4" data-testid="dashboard-loading">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[...Array(8)].map((_, i) => <Card key={i}><CardContent className="p-4"><div className="h-16 bg-muted animate-pulse rounded-sm" /></CardContent></Card>)}
+          {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <SkeletonCard className="lg:col-span-2" />
+          <SkeletonCard />
         </div>
       </div>
+    );
+  }
+
+  if (error && !stats) {
+    return (
+      <ErrorState
+        title="Couldn't load the dashboard"
+        error={error}
+        onRetry={() => { setError(null); setLoading(true); fetchAll(); }}
+      />
     );
   }
 
@@ -133,14 +177,18 @@ export default function Dashboard() {
       </div>
 
       {isEmpty ? (
-        <Card className="border-dashed"><CardContent className="p-10 text-center">
-          <Database className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-40" strokeWidth={1} />
-          <h3 className="text-lg font-heading font-semibold mb-1">No ecosystem data found</h3>
-          <p className="text-sm text-muted-foreground mb-4">Seed demo zones and drones to get started</p>
-          <Button onClick={handleSeed} disabled={seeding} data-testid="seed-btn">
-            <Zap className="w-4 h-4 mr-2" />{seeding ? "Seeding..." : "Seed Demo Data"}
-          </Button>
-        </CardContent></Card>
+        <Card className="border-dashed">
+          <EmptyState
+            icon={Database}
+            title="No ecosystem data found"
+            description="Seed demo zones and drones to get started."
+            action={
+              <Button onClick={handleSeed} disabled={seeding} data-testid="seed-btn">
+                <Zap className="w-4 h-4 mr-2" />{seeding ? "Seeding..." : "Seed Demo Data"}
+              </Button>
+            }
+          />
+        </Card>
       ) : (
         <>
           {/* Operational Snapshot */}
@@ -293,7 +341,7 @@ export default function Dashboard() {
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
-                ) : <p className="text-sm text-muted-foreground text-center py-8">No drone data</p>}
+                ) : <EmptyState icon={Bot} title="No drones registered" description="Drone telemetry will appear here once the fleet is seeded." className="py-6" />}
               </CardContent>
             </Card>
           </div>

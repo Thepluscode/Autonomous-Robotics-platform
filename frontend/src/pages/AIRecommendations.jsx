@@ -7,6 +7,8 @@ import { Label } from "../components/ui/label";
 import { aiAPI, zoneAPI } from "../lib/api";
 import { formatDateTime } from "../lib/utils";
 import { Brain, Sparkles, History, Loader2 } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState, SkeletonRow } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function AIRecommendations() {
   const [zones, setZones] = useState([]);
@@ -15,17 +17,23 @@ export default function AIRecommendations() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [z, h] = await Promise.all([zoneAPI.getAll(), aiAPI.getHistory()]);
-        setZones(z.data || []);
-        setHistory(h.data || []);
-      } catch {} finally { setHistoryLoading(false); }
-    };
-    fetch();
-  }, []);
+  const fetchData = async () => {
+    setHistoryLoading(true);
+    try {
+      const [z, h] = await Promise.all([zoneAPI.getAll(), aiAPI.getHistory()]);
+      setZones(z.data || []);
+      setHistory(h.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
 
   const handleAnalyze = async () => {
     setLoading(true);
@@ -34,9 +42,22 @@ export default function AIRecommendations() {
       const payload = { ...form, zone_id: form.zone_id === "__all__" ? "" : form.zone_id };
       const res = await aiAPI.analyze(payload);
       setResult(res.data);
-      const h = await aiAPI.getHistory();
-      setHistory(h.data || []);
-    } catch {} finally { setLoading(false); }
+      toast.success("Analysis complete", { description: form.analysis_type });
+      try {
+        const h = await aiAPI.getHistory();
+        setHistory(h.data || []);
+      } catch (refreshErr) {
+        toast.error("Couldn't refresh history", {
+          description: refreshErr.response?.data?.detail || refreshErr.message,
+        });
+      }
+    } catch (err) {
+      toast.error("Analysis failed", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const analysisTypes = [
@@ -101,10 +122,12 @@ export default function AIRecommendations() {
                 </div>
               </div>
             ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                <Brain className="w-12 h-12 mx-auto mb-3 opacity-30" strokeWidth={1} />
-                <p className="text-sm">Configure and run an analysis to see AI recommendations</p>
-              </div>
+              <EmptyState
+                icon={Brain}
+                title="No analysis yet"
+                description="Configure and run an analysis to see AI recommendations."
+                className="py-8"
+              />
             )}
           </CardContent>
         </Card>
@@ -118,7 +141,15 @@ export default function AIRecommendations() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {history.length > 0 ? (
+          {historyLoading ? (
+            <SkeletonRow count={3} />
+          ) : error && history.length === 0 ? (
+            <ErrorState
+              title="Couldn't load history"
+              error={error}
+              onRetry={() => { setError(null); fetchData(); }}
+            />
+          ) : history.length > 0 ? (
             <div className="space-y-3">
               {history.map((item, i) => (
                 <div key={item.id || i} className="p-3 rounded-sm border border-border">
@@ -130,7 +161,14 @@ export default function AIRecommendations() {
                 </div>
               ))}
             </div>
-          ) : <p className="text-sm text-muted-foreground text-center py-4">No analysis history yet</p>}
+          ) : (
+            <EmptyState
+              icon={History}
+              title="No analysis history yet"
+              description="Past AI analyses will appear here once you run one."
+              className="py-6"
+            />
+          )}
         </CardContent>
       </Card>
     </div>

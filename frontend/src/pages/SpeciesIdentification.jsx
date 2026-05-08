@@ -9,6 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { speciesAPI, zoneAPI } from "../lib/api";
 import { formatDateTime } from "../lib/utils";
 import { Bug, Search, Loader2, History, Upload, Link2, Image as ImageIcon } from "lucide-react";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 
 export default function SpeciesIdentification() {
   const [zones, setZones] = useState([]);
@@ -21,17 +23,26 @@ export default function SpeciesIdentification() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [pageLoading, setPageLoading] = useState(true);
+  const [pageError, setPageError] = useState(null);
+
+  const fetchData = async () => {
+    setPageLoading(true);
+    try {
+      const [z, h, s] = await Promise.all([zoneAPI.getAll(), speciesAPI.getHistory(), speciesAPI.getStats()]);
+      setZones(z.data || []);
+      setHistory(h.data || []);
+      setStats(s.data);
+      setPageError(null);
+    } catch (err) {
+      setPageError(err);
+    } finally {
+      setPageLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [z, h, s] = await Promise.all([zoneAPI.getAll(), speciesAPI.getHistory(), speciesAPI.getStats()]);
-        setZones(z.data || []);
-        setHistory(h.data || []);
-        setStats(s.data);
-      } catch {}
-    };
-    fetch();
+    fetchData();
   }, []);
 
   const refreshSpeciesData = async () => {
@@ -51,8 +62,11 @@ export default function SpeciesIdentification() {
       const res = await speciesAPI.identify(imageUrl, normalizedZoneId);
       setResult(res.data);
       await refreshSpeciesData();
-    } catch {
-      setError("Species identification failed. Check the image URL and try again.");
+      toast.success("Species identified", { description: res.data?.species_name || "Result ready." });
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || "Check the image URL and try again.";
+      setError(`Species identification failed. ${msg}`);
+      toast.error("Identification failed", { description: msg });
     } finally { setLoading(false); }
   };
 
@@ -79,10 +93,27 @@ export default function SpeciesIdentification() {
       const res = await speciesAPI.identifyUpload(previewUrl, selectedFile, normalizedZoneId);
       setResult(res.data);
       await refreshSpeciesData();
-    } catch {
-      setError("Species identification failed. Upload a valid image under 5MB.");
+      toast.success("Species identified", { description: res.data?.species_name || "Result ready." });
+    } catch (err) {
+      const msg = err.response?.data?.detail || err.message || "Upload a valid image under 5MB.";
+      setError(`Species identification failed. ${msg}`);
+      toast.error("Identification failed", { description: msg });
     } finally { setLoading(false); }
   };
+
+  if (pageLoading) {
+    return <LoadingState label="Loading species data..." />;
+  }
+
+  if (pageError && history.length === 0 && !stats) {
+    return (
+      <ErrorState
+        title="Couldn't load species data"
+        error={pageError}
+        onRetry={() => { setPageError(null); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="species-id-page">
@@ -175,7 +206,13 @@ export default function SpeciesIdentification() {
                 </div>
                 {result.ai_analysis && <div className="p-3 rounded-sm bg-muted/50 border border-border"><p className="text-sm">{result.ai_analysis}</p></div>}
               </div>
-            ) : <div className="text-center py-12 text-muted-foreground"><Bug className="w-10 h-10 mx-auto mb-3 opacity-30" /><p className="text-sm">Submit an image to identify species</p></div>}
+            ) : (
+              <EmptyState
+                icon={Bug}
+                title="No species identified yet"
+                description="Submit an image to identify species."
+              />
+            )}
           </CardContent>
         </Card>
       </div>
@@ -196,7 +233,13 @@ export default function SpeciesIdentification() {
                 </div>
               ))}
             </div>
-          ) : <p className="text-sm text-muted-foreground text-center py-4">No identifications yet</p>}
+          ) : (
+            <EmptyState
+              icon={History}
+              title="No identifications yet"
+              description="Identification results will appear here once you submit an image."
+            />
+          )}
         </CardContent>
       </Card>
     </div>

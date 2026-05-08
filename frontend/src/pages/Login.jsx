@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { toast } from "../lib/toast";
 import { Leaf, AlertCircle } from "lucide-react";
 
 export default function Login() {
@@ -26,6 +27,7 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email, password);
+      toast.success("Welcome back", { description: email });
       navigate("/", { replace: true });
     } catch (err) {
       setError(err.response?.data?.detail || "Login failed. Please try again.");

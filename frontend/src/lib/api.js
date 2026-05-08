@@ -231,6 +231,22 @@ export const publicAPI = {
   getDashboard: () => api.get("/public/dashboard"),
 };
 
+// ======================== PROVENANCE (auditor surface) ========================
+// Public-by-design endpoints used by /gaia-prime. None of these require
+// auth — that's the whole point of the verifiable rewilding chain. The
+// well-known JWK lives at the site root, not under /api/, so it goes
+// through the bare base URL.
+export const provenanceAPI = {
+  // Ed25519 public key in JWK format. RFC 8037 OKP/Ed25519.
+  getPublicKey: () => axios.get(`${API_BASE}/.well-known/keys.json`),
+  // Aggregate signed-observation root for a zone over the last `hours`
+  // (capped at 168 = 7 days server-side).
+  getZoneAttestation: (zoneId, hours = 24) =>
+    api.get(`/zones/${zoneId}/attestation?hours=${hours}`),
+  // Recent observations, optionally filtered to a zone.
+  listObservations: (params = {}) => api.get("/observations", { params }),
+};
+
 // ======================== SEED ========================
 export const seedAPI = {
   seed: () => api.post("/seed"),

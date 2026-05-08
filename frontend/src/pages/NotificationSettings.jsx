@@ -6,6 +6,8 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { notificationAPI } from "../lib/api";
 import { formatDateTime } from "../lib/utils";
+import { LoadingState, EmptyState, ErrorState } from "../components/state";
+import { toast } from "../lib/toast";
 import { Bell, Mail, Plus } from "lucide-react";
 
 export default function NotificationSettings() {
@@ -14,16 +16,23 @@ export default function NotificationSettings() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchData = async () => {
+    try {
+      const [s, h] = await Promise.all([notificationAPI.getSubscriptions(), notificationAPI.getHistory()]);
+      setSubscriptions(s.data || []);
+      setHistory(h.data || []);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetch = async () => {
-      try {
-        const [s, h] = await Promise.all([notificationAPI.getSubscriptions(), notificationAPI.getHistory()]);
-        setSubscriptions(s.data || []);
-        setHistory(h.data || []);
-      } catch {} finally { setLoading(false); }
-    };
-    fetch();
+    fetchData();
   }, []);
 
   const handleSubscribe = async () => {
@@ -32,10 +41,30 @@ export default function NotificationSettings() {
       await notificationAPI.subscribe(email, name);
       const s = await notificationAPI.getSubscriptions();
       setSubscriptions(s.data || []);
+      const subscribed = email;
       setEmail("");
       setName("");
-    } catch {}
+      toast.success("Subscribed", { description: subscribed });
+    } catch (err) {
+      toast.error("Couldn't subscribe", {
+        description: err.response?.data?.detail || err.message || "Try again.",
+      });
+    }
   };
+
+  if (loading) {
+    return <LoadingState label="Loading notifications..." />;
+  }
+
+  if (error && subscriptions.length === 0 && history.length === 0) {
+    return (
+      <ErrorState
+        title="Couldn't load notifications"
+        error={error}
+        onRetry={() => { setError(null); setLoading(true); fetchData(); }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6" data-testid="notifications-page">
@@ -71,7 +100,14 @@ export default function NotificationSettings() {
                   </div>
                 ))}
               </div>
-            ) : <p className="text-sm text-muted-foreground text-center py-4">No subscriptions yet</p>}
+            ) : (
+              <EmptyState
+                icon={Mail}
+                title="No subscriptions yet"
+                description="Add an email above to receive critical ecosystem alerts."
+                className="py-6"
+              />
+            )}
           </CardContent>
         </Card>
       </div>
@@ -94,7 +130,14 @@ export default function NotificationSettings() {
                 </div>
               ))}
             </div>
-          ) : <p className="text-sm text-muted-foreground text-center py-4">No notifications sent yet</p>}
+          ) : (
+            <EmptyState
+              icon={Bell}
+              title="No notifications sent yet"
+              description="Alerts will appear here when subscribers receive them."
+              className="py-6"
+            />
+          )}
         </CardContent>
       </Card>
     </div>
