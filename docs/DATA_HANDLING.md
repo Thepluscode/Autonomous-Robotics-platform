@@ -57,7 +57,7 @@ The chain is publicly verifiable, which means anything you sign is potentially r
 - **Personally identifying information in imagery.** If your camera traps occasionally capture humans (rangers, researchers, accidental tourists, poachers themselves), do not submit those frames. There's no legitimate reason for the chain to carry human imagery, and several reasons not to.
 - **Sensor readings that map back to individual humans.** Acoustic sensor recordings that include human voices, GPS traces of named rangers, etc. Same logic — out of scope for the chain.
 
-If you accidentally submit something that should have been redacted, **tell us immediately**. The signed observation cannot be retroactively unsigned (that's the point of the chain), but we can mark the observation as `redacted=true` so consumers know to ignore it. The signature stays valid; the content stays in the chain; downstream systems are expected to honor the flag.
+If you accidentally submit something that should have been redacted, **tell us immediately**. The signed observation cannot be retroactively unsigned (that's the point of the chain), but we mark the observation as `redacted=true` via `POST /api/observations/{id}/redact` (admin-only, requires a `reason`). The flag lives **outside the signed body**, so the signature still verifies cryptographically — but the public API suppresses the `payload` field on every read of a redacted observation, and downstream systems are expected to honor the flag. The per-zone aggregate root does *not* change across a redaction (the digest list stays the same), so historical attestation roots an auditor saved yesterday are still valid today.
 
 ---
 
@@ -76,7 +76,7 @@ If you accidentally submit something that should have been redacted, **tell us i
 
 - **Account deletion:** request via email; we delete the account row and revoke all sessions within 7 business days. Your historical observations remain in the chain (signed by your zone, attributable to it via `source_id`), but the account that created them is removed.
 - **Zone deletion:** we mark the zone `deleted=true` rather than removing the row, so historical observations referring to it remain interpretable. The zone disappears from `/gaia-prime` and the public dashboard within ~5 minutes.
-- **Observation deletion:** **not supported by design**. The chain is append-only. The closest equivalent is the `redacted=true` flag from §3 above.
+- **Observation deletion:** **not supported by design**. The chain is append-only. The closest equivalent is `POST /api/observations/{id}/redact` (admin-only) which sets the `redacted=true` flag described in §3 — the observation stays in the chain with its signature intact, but the payload is suppressed on every public read.
 - **Public-key rotation:** if our private key is ever compromised, we publish a new key id at `/.well-known/keys.json` and announce the rotation. Observations signed under the old key remain verifiable using the historic key (which we keep published in a `revoked` array). Any observations signed *after* the announced rotation date with the old key are not legitimate.
 
 ---

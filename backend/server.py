@@ -3081,6 +3081,29 @@ async def public_provenance_stats(hours: int = 168):
     }
 
 
+def _redact_for_public(obs: dict) -> dict:
+    """Apply the redact-flag transform on its way out to a public consumer.
+
+    The redact flag (`redacted`, `redacted_at`, `redaction_reason`) is
+    metadata that lives OUTSIDE the signed body — `sign_observation`
+    only commits to (`observed_at`, `source_type`, `source_id`,
+    `zone_id`, `payload`). That deliberate split is what lets us mark
+    an observation as untrustworthy after the fact without breaking
+    the cryptographic chain: the signature on the original body still
+    verifies; consumers just shouldn't trust the content.
+
+    For public consumers we strip the `payload` so the suppressed
+    content doesn't leak. Admin-side reads bypass this helper.
+    """
+    if not obs.get("redacted"):
+        return obs
+    redacted = dict(obs)
+    redacted["payload"] = None
+    redacted.setdefault("redacted_at", obs.get("redacted_at"))
+    redacted.setdefault("redaction_reason", obs.get("redaction_reason"))
+    return redacted
+
+
 @api_router.get("/observations")
 async def list_observations(
     zone_id: Optional[str] = None,
@@ -3096,7 +3119,8 @@ async def list_observations(
     if since:
         query["observed_at"] = {"$gte": since}
     cap = max(1, min(int(limit or 200), 1000))
-    return await db.observations.find(query, {"_id": 0}).sort("observed_at", -1).limit(cap).to_list(cap)
+    rows = await db.observations.find(query, {"_id": 0}).sort("observed_at", -1).limit(cap).to_list(cap)
+    return [_redact_for_public(o) for o in rows]
 
 
 @api_router.get("/observations/{observation_id}")
@@ -3104,8 +3128,68 @@ async def get_observation(observation_id: str = Path(..., pattern=_UUID_ID_PATTE
     obs = await db.observations.find_one({"id": observation_id}, {"_id": 0})
     if not obs:
         raise HTTPException(status_code=404, detail="Observation not found")
+    # Verify against the original (unredacted) body — the signature was
+    # produced over those bytes. Then apply the public-redaction
+    # transform on the way out so a redacted payload doesn't leak even
+    # when verification still passes.
     ok, reason = verify_observation(obs)
-    return {**obs, "verification": {"valid": ok, "reason": reason}}
+    public = _redact_for_public(obs)
+    return {**public, "verification": {"valid": ok, "reason": reason}}
+
+
+@api_router.post("/observations/{observation_id}/redact", status_code=200)
+async def redact_observation(
+    observation_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    body: dict = None,
+    user: dict = Depends(require_role(["admin"])),
+):
+    """Mark a signed observation as redacted. Admin only.
+
+    Use cases: a partner accidentally uploaded an image containing PII;
+    a camera trap captured poaching-relevant geographic detail of an
+    endangered species; a sensor reading was inadvertently labeled with
+    information that should have been redacted client-side first.
+
+    What this DOES:
+      - Sets `redacted=true`, `redacted_at`, `redaction_reason` on the
+        observation document. These fields are outside the signed body
+        and do not invalidate the signature.
+      - Hides the `payload` field from public reads going forward.
+
+    What this does NOT do:
+      - It does not delete the observation. The chain is append-only.
+      - It does not change the body digest or the per-zone aggregate
+        root. Auditors checking historical roots still get the same
+        SHA-256 they got yesterday — that's the point of the chain.
+      - It does not destroy the stored payload. Admin reads (and
+        forensic recovery) still have access. To overwrite the payload
+        on disk, follow the v0.2 hard-redact procedure (not yet shipped).
+    """
+    body = body or {}
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail="`reason` is required — record why the observation is being redacted.",
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.observations.update_one(
+        {"id": observation_id},
+        {"$set": {
+            "redacted": True,
+            "redacted_at": now,
+            "redaction_reason": reason,
+            "redacted_by": user.get("email") or user.get("id"),
+        }},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Observation not found")
+    return {
+        "id": observation_id,
+        "redacted": True,
+        "redacted_at": now,
+        "redaction_reason": reason,
+    }
 
 
 @api_router.post("/observations/verify")

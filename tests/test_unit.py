@@ -236,6 +236,96 @@ def test_attestation_max_hours_capped_at_one_week():
     assert server.ATTESTATION_MAX_HOURS == 168
 
 
+# --------------------------- redact-flag transform ---------------------------
+#
+# Direct unit tests on the helper. The endpoint flow is exercised via the
+# surface-lock test (which classifies the redact endpoint as admin-gated),
+# and via integration tests in test_api.py when the live backend is up.
+
+def test_redact_for_public_passes_through_unredacted():
+    obs = {
+        "id": "x",
+        "payload": {"value": 42},
+        "digest": "abc",
+        "signature": "sig",
+    }
+    out = server._redact_for_public(obs)
+    assert out is obs, "non-redacted observations must pass through unchanged"
+    assert out["payload"] == {"value": 42}
+
+
+def test_redact_for_public_strips_payload_when_flagged():
+    obs = {
+        "id": "y",
+        "payload": {"sensitive": "data"},
+        "digest": "abc",
+        "signature": "sig",
+        "redacted": True,
+        "redacted_at": "2026-05-09T00:00:00+00:00",
+        "redaction_reason": "PII captured",
+    }
+    out = server._redact_for_public(obs)
+    assert out["payload"] is None, "redacted observation must have payload suppressed"
+    assert out["redacted"] is True
+    assert out["redaction_reason"] == "PII captured"
+    # Cryptographic fields preserved — auditors with the original payload
+    # archived elsewhere can still verify the signature against that.
+    assert out["digest"] == "abc"
+    assert out["signature"] == "sig"
+
+
+def test_redact_for_public_does_not_mutate_input():
+    obs = {
+        "id": "z",
+        "payload": {"sensitive": "data"},
+        "redacted": True,
+        "redaction_reason": "test",
+    }
+    server._redact_for_public(obs)
+    # The input dict (which may be a Mongo doc) must NOT be mutated —
+    # otherwise admin views would see suppressed payloads as a side effect.
+    assert obs["payload"] == {"sensitive": "data"}
+
+
+def test_redact_endpoint_is_admin_gated_via_dependency_tree():
+    # Asserting the framework-level enforcement directly — the redact
+    # route must declare `Depends(require_role(["admin"]))` so an
+    # accidental future edit that drops the dependency fails this test
+    # before it can reach Mongo. Probing the route via TestClient
+    # against a stub Mongo gives 500s rather than the 401/403 we want
+    # to lock in.
+    from fastapi.routing import APIRoute
+    redact = next(
+        (
+            r for r in server.app.routes
+            if isinstance(r, APIRoute)
+            and r.path == "/api/observations/{observation_id}/redact"
+        ),
+        None,
+    )
+    assert redact is not None, "redact route must be registered"
+    assert "POST" in (redact.methods or set()), "redact route must be POST"
+
+    # Walk the dependency tree for a `role_checker` (the closure
+    # produced by `require_role([...])`).
+    seen, stack, found_role_checker = set(), [redact.dependant], False
+    while stack:
+        d = stack.pop()
+        if d is None or id(d) in seen:
+            continue
+        seen.add(id(d))
+        call = getattr(d, "call", None)
+        if call is not None and getattr(call, "__name__", "") == "role_checker":
+            found_role_checker = True
+            break
+        for sub in getattr(d, "dependencies", []) or []:
+            stack.append(sub)
+    assert found_role_checker, (
+        "redact route must use Depends(require_role([\"admin\"])) — admin-only "
+        "is the load-bearing security claim of this endpoint"
+    )
+
+
 # --------------------------- AUTH_GATE_PHASE_A middleware --------------------
 #
 # These tests exercise the dark-shipped Phase-A middleware via FastAPI's
