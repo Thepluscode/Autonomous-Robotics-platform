@@ -111,14 +111,20 @@ pointers to other restoration projects you respect.
 
 ---
 
-## What's still missing — flag these to user before mass-sending
+## Companion docs to send alongside
 
-These are gaps the doc doesn't paper over:
+When you send Template B (pilot outreach), attach links to:
 
-1. **Onboarding flow.** "I'll send onboarding" is a promise without a product. Right now there's no pilot-partner onboarding wizard, no API key handout flow, no documented "how to get your first signed observation in under an hour." Build the minimum (a how-to doc + an account-creation script) before the second outreach goes out.
-2. **Day-31 plan.** What happens after the pilot? If the answer is "we'll figure it out," that's fine — but say so to the partner up front rather than ghosting them.
-3. **Pricing.** Currently undefined. Pre-revenue is fine; "we'll never charge" is not, because partners assume the pilot is the price. Write a one-line pricing intent (e.g., "future pricing will be per-zone-per-month with the first zone free in perpetuity for pilot partners").
-4. **Liability and data-handling.** A pilot partner shares zone polygons, sensor data, possibly camera-trap imagery that may be sensitive (e.g., poacher-relevant). At minimum: a one-page data-handling note covering retention, sharing, and deletion. This is not legal advice; this is don't-be-creepy hygiene.
+- `docs/PILOT_ONBOARDING.md` — runbook from "we said yes" to first signed observation in under an hour
+- `docs/PILOT_TERMS.md` — what day 31 looks like, what "free" means, the three forks (research partner / paid customer / graceful end), pricing intent
+- `docs/DATA_HANDLING.md` — what we collect, what's public-by-design, retention, deletion, sensitive-data redaction guidance, open gaps
+
+When you send Template A (auditor outreach), attach:
+
+- `docs/METHODOLOGY_v0.1.md` — the document under review
+- `docs/AUDITOR_WALKTHROUGH.md` — 10-minute end-to-end verification with the offline `verify_claim.py` script
+
+Send the doc URLs *in the email body*, not as attachments — reviewers will skim links faster than they'll open files, and a 404 on a link is a more honest failure mode than an attachment that lands in spam.
 
 ---
 
