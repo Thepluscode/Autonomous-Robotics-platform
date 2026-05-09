@@ -36,10 +36,13 @@ Current types (verifiable in code at `backend/server.py` and `backend/provenance
 | `intervention_before` | State snapshot of zone Z immediately before action A is executed | Independent witness of pre-state |
 | `intervention_action` | The action itself (kind, parameters, executing robot) | Operator-side record |
 | `intervention_after` | State snapshot of zone Z immediately after action A | Independent witness of post-state |
+| `satellite_image_hash` | Sentinel-2 L2A scene reference: scene id, acquisition timestamp, cloud cover, thumbnail SHA-256, canonical Element84 STAC URL | **Cross-witness from a source the platform operator does not control.** Fetched from Element84's earth-search STAC API, signed with the same Ed25519 key as every other observation. |
 
-The intervention triple (`before` / `action` / `after`) is the load-bearing primitive: any restoration claim is reducible to one of these triples plus the signed sensor stream that brackets it.
+The intervention triple (`before` / `action` / `after`) is the load-bearing primitive for *intervention* claims: any restoration intervention is reducible to one of these triples plus the signed sensor stream that brackets it. `satellite_image_hash` is the load-bearing primitive for *cross-witness* — auditors verify the platform's claims against a public satellite record that we cannot rewrite.
 
-**[OPEN]** v0.2 candidates: `satellite_image_hash` (cross-witness via Sentinel-2 / Planet Labs), `human_inspection` (human-attested visit), `lab_assay` (e.g., soil sample lab report).
+The satellite witness loop is **default-OFF** (`SATELLITE_WITNESS_ENABLED=1` to enable). Production deploys turn it on; local dev leaves it off so `pytest` doesn't make network calls. Cadence is 6 hours by default (Sentinel-2 revisits each location every 5 days, so faster polling wastes free API quota without surfacing new data). The auditor verification flow for a satellite witness: fetch the canonical STAC item from `payload.stac_url`, recompute the body digest, verify the signature, then independently download the thumbnail from `payload.thumbnail_url` and confirm `SHA-256` matches `payload.thumbnail_sha256`.
+
+**[OPEN]** v0.2 candidates: `human_inspection` (human-attested visit), `lab_assay` (e.g., soil sample lab report).
 
 ---
 
@@ -89,7 +92,7 @@ These are listed *because* they're known. An auditor reading this should compare
 
 1. **Single-operator chain.** The platform is the only signer. A v2 that admits multiple operators with separate keys, cross-signing each other's observations, would be substantially harder to spoof — but that's a coordination problem we haven't yet solved.
 2. **Species classifier is `deterministic-v1`.** The default is a curated 25-species biome taxonomy with content-hash variation, not a real vision model. BioCLIP is plumbed (`SPECIES_IDENTIFIER=bioclip` env) but disabled by default. Every species observation records its `method` field, so a reviewer can filter by `method == "bioclip"` to see only model-grade IDs.
-3. **No satellite cross-witness.** A real restoration claim should be triangulable against Sentinel-2 / Planet Labs imagery. The platform records no satellite data today; a `satellite_image_hash` source_type is on the v0.2 list.
+3. **Satellite cross-witness shipped, but Sentinel-2 only.** The chain now records `satellite_image_hash` observations from Element84's earth-search STAC API (Sentinel-2 L2A, ESA-operated, free, no API key required). Planet Labs / Maxar / commercial high-resolution sources are not yet integrated — that's a v0.2 candidate when the cost case justifies it. For most rewilding claims at zone-scale, Sentinel-2's 10-meter resolution and 5-day revisit are sufficient.
 4. **No external time anchor.** Server-issued timestamps are trust-but-verify against the NTP-synced host. Anchoring to Roughtime or OpenTimestamps would close that gap.
 5. **No on-chain mirror.** The chain is a Mongo collection with cryptographic integrity, not a blockchain. We deliberately do *not* tokenize or stake — premature tokenization is the dominant failure mode in this space. A read-only mirror to a public ledger (e.g., Bitcoin OP_RETURN, IPFS CID pinning) is a defensible additive primitive for v2.
 6. **Aggregate root is not a Merkle tree.** See Section 3. Inclusion proofs require listing all observations; v2 should upgrade.

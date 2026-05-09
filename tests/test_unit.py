@@ -287,6 +287,116 @@ def test_redact_for_public_does_not_mutate_input():
     assert obs["payload"] == {"sensitive": "data"}
 
 
+# --------------------------- satellite cross-witness ------------------------
+#
+# Pure-function tests for the satellite module. The orchestrator
+# (`tick_satellite_witness`) is exercised end-to-end by integration
+# tests in test_api.py against a live backend; here we lock the
+# behaviors that don't need Mongo or the network.
+
+def test_satellite_zone_bbox_from_explicit_field():
+    import satellite
+    bbox = satellite._zone_bbox({"bbox": [10.0, 20.0, 11.0, 21.0]})
+    assert bbox == [10.0, 20.0, 11.0, 21.0]
+
+
+def test_satellite_zone_bbox_from_polygon():
+    import satellite
+    zone = {"polygon": [[[10.0, 20.0], [11.0, 20.0], [11.0, 21.0], [10.0, 21.0], [10.0, 20.0]]]}
+    bbox = satellite._zone_bbox(zone)
+    assert bbox == [10.0, 20.0, 11.0, 21.0]
+
+
+def test_satellite_zone_bbox_from_centroid_fallback():
+    import satellite
+    zone = {"center_lat": 50.0, "center_lng": 30.0}
+    bbox = satellite._zone_bbox(zone)
+    # Half-degree box around the centroid: [lng-0.5, lat-0.5, lng+0.5, lat+0.5]
+    assert bbox == [29.5, 49.5, 30.5, 50.5]
+
+
+def test_satellite_zone_bbox_returns_none_when_geographic_data_missing():
+    import satellite
+    assert satellite._zone_bbox({"id": "z1", "name": "no-geometry"}) is None
+
+
+def test_satellite_witness_disabled_by_default():
+    import satellite
+    # Test env doesn't set SATELLITE_WITNESS_ENABLED; the loop must be a no-op.
+    import os
+    os.environ.pop("SATELLITE_WITNESS_ENABLED", None)
+    assert satellite.is_enabled() is False
+
+
+def test_satellite_witness_enabled_when_env_set(monkeypatch):
+    import satellite
+    monkeypatch.setenv("SATELLITE_WITNESS_ENABLED", "1")
+    assert satellite.is_enabled() is True
+    monkeypatch.setenv("SATELLITE_WITNESS_ENABLED", "true")
+    assert satellite.is_enabled() is True
+    monkeypatch.setenv("SATELLITE_WITNESS_ENABLED", "no")
+    assert satellite.is_enabled() is False
+
+
+def test_satellite_build_witness_payload_distills_stac_item():
+    import satellite
+    zone = {"id": "z1", "center_lat": 50.0, "center_lng": 30.0}
+    scene = {
+        "id": "S2A_MSIL2A_20260507T100001_N0509_R022_T34UDB_20260507T120000",
+        "bbox": [29.5, 49.5, 30.5, 50.5],
+        "properties": {
+            "datetime": "2026-05-07T10:00:01Z",
+            "platform": "sentinel-2a",
+            "eo:cloud_cover": 12.3,
+        },
+        "assets": {
+            "thumbnail": {"href": "https://example.com/thumb.jpg"},
+        },
+    }
+    out = satellite._build_witness_payload(zone, scene, "abc123def456")
+    assert out["scene_id"] == scene["id"]
+    assert out["platform"] == "sentinel-2a"
+    assert out["acquisition_at"] == "2026-05-07T10:00:01Z"
+    assert out["cloud_cover_pct"] == 12.3
+    assert out["bbox"] == [29.5, 49.5, 30.5, 50.5]
+    assert out["thumbnail_url"] == "https://example.com/thumb.jpg"
+    assert out["thumbnail_sha256"] == "abc123def456"
+    assert out["zone_bbox"] == [29.5, 49.5, 30.5, 50.5]
+    assert out["stac_collection"] == satellite.SATELLITE_COLLECTION
+    assert out["stac_url"], "stac_url must be populated when scene id is present"
+
+
+def test_satellite_witness_endpoint_is_admin_gated():
+    """The /_internal/satellite-tick endpoint must require admin role,
+    same as the drone-tick endpoint, so an anonymous caller can't
+    burn through Element84 quota or pollute the chain."""
+    from fastapi.routing import APIRoute
+    route = next(
+        (
+            r for r in server.app.routes
+            if isinstance(r, APIRoute)
+            and r.path == "/api/_internal/satellite-tick"
+        ),
+        None,
+    )
+    assert route is not None, "satellite-tick route must be registered"
+    assert "POST" in (route.methods or set())
+
+    seen, stack, found = set(), [route.dependant], False
+    while stack:
+        d = stack.pop()
+        if d is None or id(d) in seen:
+            continue
+        seen.add(id(d))
+        call = getattr(d, "call", None)
+        if call is not None and getattr(call, "__name__", "") == "role_checker":
+            found = True
+            break
+        for sub in getattr(d, "dependencies", []) or []:
+            stack.append(sub)
+    assert found, "satellite-tick must be admin-gated via require_role"
+
+
 def test_redact_endpoint_is_admin_gated_via_dependency_tree():
     # Asserting the framework-level enforcement directly — the redact
     # route must declare `Depends(require_role(["admin"]))` so an

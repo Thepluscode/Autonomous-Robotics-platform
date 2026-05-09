@@ -59,6 +59,11 @@ from simulator import (
     DRONE_ARRIVED_DEG,
     DRONE_MIN_BATTERY,
 )
+from satellite import (
+    run_satellite_witness_loop,
+    tick_satellite_witness,
+    is_enabled as is_satellite_witness_enabled,
+)
 # Star-import the Pydantic models so route handlers below can keep using
 # them by bare name (Drone, Zone, etc.) instead of `models.Drone`. New
 # request/response models go in models.py, not here.
@@ -2961,6 +2966,27 @@ async def drone_tick(user: dict = Depends(require_role(["admin"]))):
     updates = await tick_drone_simulation(db, manager)
     return {"updated": len(updates), "drones": updates}
 
+
+@api_router.post("/_internal/satellite-tick", include_in_schema=False)
+async def satellite_tick(user: dict = Depends(require_role(["admin"]))):
+    """Run one satellite cross-witness pass over all zones. Records a
+    signed observation per zone with `source_type="satellite_image_hash"`
+    by querying Element84's earth-search STAC for the most recent
+    cloud-tolerant Sentinel-2 L2A scene covering the zone's bbox.
+
+    Admin-only. Useful for: ops triggering a witness on demand outside
+    the 6-hour loop interval, integration tests, demo prep. Returns the
+    count of new observations recorded (0 if every zone already has the
+    latest scene witnessed, or if STAC returned nothing).
+    """
+    if not is_satellite_witness_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Satellite witness disabled. Set SATELLITE_WITNESS_ENABLED=1.",
+        )
+    recorded = await tick_satellite_witness(db)
+    return {"recorded": recorded}
+
 # WebSocket
 @app.websocket("/ws/updates")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(default=None)):
@@ -3460,6 +3486,13 @@ async def startup_events():
     # Start drone simulation (loop lives in simulator.py and is itself
     # supervised — each tick is wrapped in try/except + backoff).
     asyncio.create_task(run_drone_simulation_loop(db, manager))
+
+    # Start satellite cross-witness loop. No-op when SATELLITE_WITNESS_ENABLED
+    # is unset (default for local dev / test). When enabled it polls
+    # Element84's earth-search STAC API for the most recent Sentinel-2
+    # scene covering each zone's bbox and records a signed observation
+    # of the scene id + thumbnail SHA-256.
+    asyncio.create_task(run_satellite_witness_loop(db))
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
