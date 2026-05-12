@@ -21,15 +21,17 @@ at /.well-known/keys.json. The verification primitives are all standard
 
 What I have shipped:
   • Methodology v0.1: [link to docs/METHODOLOGY_v0.1.md]
+  • Threat model v0.1 (adversary analysis): [link to docs/THREAT_MODEL.md]
   • 10-minute auditor walkthrough with offline verify script:
     [link to docs/AUDITOR_WALKTHROUGH.md]
   • Live chain to verify against: https://[your-domain]/gaia-prime
   • Public provenance stats: https://[your-domain]/api/public/provenance/stats
 
-What I'm asking for: 30 minutes of your time to read those two docs and
-tell me which of the v0.1 known limitations are actual blockers in a
-credit-issuance context vs. acceptable starting points. Specifically the
-five questions in Methodology §8.
+What I'm asking for: 30 minutes of your time to read those three docs and
+tell me which of the v0.1 known limitations and unmitigated threat vectors
+are actual blockers in a credit-issuance context vs. acceptable starting
+points. Specifically the five questions at the end of Methodology §8 and
+Threat Model §7.
 
 I'm not asking for a public endorsement, a write-up, or any promise about
 [your org]'s methodology. Just an honest "this gap is a blocker" /
@@ -122,6 +124,7 @@ When you send Template B (pilot outreach), attach links to:
 When you send Template A (auditor outreach), attach:
 
 - `docs/METHODOLOGY_v0.1.md` — the document under review
+- `docs/THREAT_MODEL.md` — adversary analysis: every attack vector with current mitigation and residual risk
 - `docs/AUDITOR_WALKTHROUGH.md` — 10-minute end-to-end verification with the offline `verify_claim.py` script
 
 Send the doc URLs *in the email body*, not as attachments — reviewers will skim links faster than they'll open files, and a 404 on a link is a more honest failure mode than an attachment that lands in spam.

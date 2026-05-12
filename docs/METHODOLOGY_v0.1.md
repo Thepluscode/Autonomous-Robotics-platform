@@ -1,6 +1,6 @@
 # Methodology v0.1 — What We Claim, How We Measure
 
-> **Audience.** Reviewers from Verra, Gold Standard, Climate Action Reserve, regen.network, Pachama, Sylvera, in-house compliance, or any third party deciding whether the platform's restoration claims are defensible. This document is the *methodology* companion to `AUDITOR_WALKTHROUGH.md` (which is the *verification procedure*).
+> **Audience.** Reviewers from Verra, Gold Standard, Climate Action Reserve, regen.network, Pachama, Sylvera, in-house compliance, or any third party deciding whether the platform's restoration claims are defensible. This document is the *methodology* companion to `AUDITOR_WALKTHROUGH.md` (the *verification procedure*) and `THREAT_MODEL.md` (the *adversary analysis*).
 >
 > **Status.** v0.1 — pre-review. This is the document we want feedback on. Sections deliberately left thin are marked **[OPEN]** so reviewers can prioritize.
 
