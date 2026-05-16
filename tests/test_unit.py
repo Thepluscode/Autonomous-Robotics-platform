@@ -819,3 +819,88 @@ def test_insert_one_monkey_patch_pops_id_after_insert(monkeypatch):
     asyncio.run(AsyncIOMotorCollection.insert_one(object(), payload))
     assert "_id" not in payload, "patched insert_one must strip _id from input dict"
     assert payload == {"id": "abc", "name": "test"}
+
+
+# --------------------------- MCP/REST mission-planner parity ----------------
+
+def test_mcp_generate_mission_reuses_rest_planner():
+    """The MCP `generate_mission` tool must call the same `_plan_mission`
+    helper and use the same `Mission` / `MissionGenerateRequest` types as
+    the REST `POST /missions/generate` route. If anyone forks the planner
+    for MCP (e.g. "agents should bypass the go_score floor"), the
+    autonomous loop diverges from the dashboard loop silently — this test
+    is the only thing that catches that drift.
+
+    Why source-level AST: the runtime function is wrapped by FastMCP's
+    @mcp.tool decorator (and may not exist at all if the `mcp` SDK isn't
+    installed in this env). The contract we care about is the source
+    text, not the runtime binding.
+    """
+    import ast
+
+    mcp_src = (_BACKEND / "mcp_server.py").read_text()
+    tree = ast.parse(mcp_src)
+
+    # Find the AsyncFunctionDef named "generate_mission" anywhere in the
+    # tree (it's nested inside `if _MCP_AVAILABLE:`).
+    fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "generate_mission":
+            fn = node
+            break
+    assert fn is not None, (
+        "mcp_server.py must define `generate_mission` — moved or renamed?"
+    )
+
+    # Walk the function body and collect every name brought in via
+    # `from X import …` and every constructor / call by identifier.
+    imports_from = {}  # module -> set of imported names
+    call_targets = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            imports_from.setdefault(mod, set()).update(a.name for a in node.names)
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Name):
+                call_targets.add(f.id)
+            elif isinstance(f, ast.Attribute):
+                call_targets.add(f.attr)
+
+    # 1) Must import the REST planner from server.py — not redefine its own.
+    assert "_plan_mission" in imports_from.get("server", set()), (
+        "MCP generate_mission must `from server import _plan_mission` so it "
+        "reuses the REST planner. If you forked the planner for MCP, you "
+        "broke the dashboard/agent parity contract — undo and share the helper."
+    )
+
+    # 2) Must import the same go-score floor used by REST authorize so a
+    # mission generated via MCP cannot bypass the launch gate.
+    assert "MISSION_GO_SCORE_FLOOR" in imports_from.get("server", set()), (
+        "MCP generate_mission must import MISSION_GO_SCORE_FLOOR from server "
+        "so MCP plans use the same go_score gate as the REST flow."
+    )
+
+    # 3) Must import the same Pydantic types — agents and the dashboard
+    # speak the same shape.
+    models_imports = imports_from.get("models", set())
+    assert "Mission" in models_imports and "MissionGenerateRequest" in models_imports, (
+        "MCP generate_mission must `from models import Mission, "
+        "MissionGenerateRequest` — same Pydantic types as the REST route."
+    )
+
+    # 4) Must actually CALL _plan_mission (not just import it).
+    assert "_plan_mission" in call_targets, (
+        "MCP generate_mission imports _plan_mission but never calls it — "
+        "did you stub the planner out?"
+    )
+
+    # 5) Must construct both Pydantic types (request goes in, mission comes out).
+    assert "MissionGenerateRequest" in call_targets, (
+        "MCP generate_mission must construct MissionGenerateRequest(...) — "
+        "do not bypass the Pydantic validation step."
+    )
+    assert "Mission" in call_targets, (
+        "MCP generate_mission must construct Mission(...) — do not bypass "
+        "the response model the dashboard reads from /missions."
+    )

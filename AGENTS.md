@@ -46,11 +46,14 @@ The literal `/drones/feeds` route used to depend on decorator ordering (it had t
 
 ## Architecture
 
-### Backend — three modules in `backend/`
-- **`server.py`** (~1570 lines) — FastAPI app, all `@api_router` route handlers, auth helpers, `ConnectionManager`, startup/shutdown, CORS, motor `_id`-leak monkey-patch. New routes go here, in the existing grouping (auth → weather → interventions → forecasts → geofences → tasks/comments → reports → public → drones → zones → sensors → alerts → AI → dashboard → patrols → species → notifications → seed).
-- **`models.py`** (~390 lines) — every Pydantic request/response/entity model. Star-imported into server.py so handlers reference `Drone`, `Zone`, etc. by bare name. Add new models here.
-- **`simulator.py`** (~110 lines) — `tick_drone_simulation(db, manager)` and the supervised `run_drone_simulation_loop(db, manager)` plus the four `DRONE_*` constants. Db handle and ConnectionManager are passed in explicitly so this module has no compile-time dependency on server.py (no circular imports).
-- **`satellite.py`** (~190 lines) — Sentinel-2 cross-witness loop. `tick_satellite_witness(db)` queries Element84's earth-search STAC API for the most recent low-cloud Sentinel-2 L2A scene covering each zone's bbox, hashes the thumbnail bytes, and signs a `source_type="satellite_image_hash"` observation against the chain. Default-OFF — `SATELLITE_WITNESS_ENABLED=1` to start the loop in production. Tunable env vars: `SATELLITE_TICK_INTERVAL_S` (default 6 h), `SATELLITE_MAX_ZONES_PER_TICK` (20), `SATELLITE_MAX_CLOUD_COVER` (60). Idempotent on `(zone_id, scene_id)` so the loop never duplicates a witness. Manual trigger for ops/tests: `POST /api/_internal/satellite-tick` (admin-only). Auditor verification flow lives in `METHODOLOGY_v0.1.md` §2.
+### Backend — modules in `backend/`
+- **`server.py`** — FastAPI app, all `@api_router` route handlers, auth helpers, `ConnectionManager`, startup/shutdown, CORS, motor `_id`-leak monkey-patch. New routes go here, in the existing grouping (auth → weather → interventions → forecasts → geofences → tasks/comments → reports → public → drones → zones → sensors → alerts → AI → dashboard → patrols → species → notifications → seed). It's grown past 3000 lines — resist the urge to "split for splitting's sake"; the grouping is by route prefix and that's the navigation system. New cross-cutting concerns get their own module (see `provenance.py`, `mcp_server.py`).
+- **`models.py`** — every Pydantic request/response/entity model. Specific names are explicitly imported into server.py (no star-import; that was removed in `1ec2754`). Add new models here.
+- **`simulator.py`** — `tick_drone_simulation(db, manager)` and the supervised `run_drone_simulation_loop(db, manager)` plus the four `DRONE_*` constants. Db handle and ConnectionManager are passed in explicitly so this module has no compile-time dependency on server.py (no circular imports).
+- **`satellite.py`** — Sentinel-2 cross-witness loop. `tick_satellite_witness(db)` queries Element84's earth-search STAC API for the most recent low-cloud Sentinel-2 L2A scene covering each zone's bbox, hashes the thumbnail bytes, and signs a `source_type="satellite_image_hash"` observation against the chain. Default-OFF — `SATELLITE_WITNESS_ENABLED=1` to start the loop in production. Tunable env vars: `SATELLITE_TICK_INTERVAL_S` (default 6 h), `SATELLITE_MAX_ZONES_PER_TICK` (20), `SATELLITE_MAX_CLOUD_COVER` (60). Idempotent on `(zone_id, scene_id)` so the loop never duplicates a witness. Manual trigger for ops/tests: `POST /api/_internal/satellite-tick` (admin-only). Auditor verification flow lives in `docs/METHODOLOGY_v0.1.md` §2.
+- **`provenance.py`** — the signed-observation chain. Every observation (drone telemetry, sensor reading, zone transition, species ID, satellite witness) is SHA-256 hashed over a canonical serialization and Ed25519-signed. Key resolution order: `OBSERVATION_PRIVATE_KEY_B64` env var (raw 32-byte base64), else HKDF-derived from `JWT_SECRET` (stable across restarts as long as `JWT_SECRET` is — **rotating `JWT_SECRET` rotates the chain**, so don't). Public key + `kid` (first 16 hex of SHA-256(pubkey)) published at `/.well-known/keys.json` so external verifiers (Verra, Gold Standard, regulators) confirm an observation came from this platform without trusting our servers. This file IS the moat: clone the dashboard in 3 months, you cannot clone 6 months of signed zone observations.
+- **`mcp_server.py`** — MCP (Model Context Protocol) surface mounted at `/mcp`. Exposes platform verbs (`list_zones`, `pick_high_leverage_zone`, `generate_mission`, `authorize_mission`, `execute_intervention`, `verify_observation`) as MCP tools so any MCP-aware agent (Claude Desktop, Claude Code, custom LangChain) can run the platform without touching the UI. Gated by `MCP_API_KEY` env var — if unset the mount returns 503 (intentional, makes the gap loud). Tools import server-internal helpers inside the function body (not at module top) to break the import cycle (server.py imports this module at the bottom). The optional `mcp` SDK is wrapped in a try/import — backend boot must not fail if it's missing (sets `mcp_http_app = None`). Two FastMCP gotchas baked in here: **do not** add `from __future__ import annotations` (breaks `issubclass(annotation, Context)` introspection) and **do not** use `Optional[T]` in tool signatures (FastMCP 1.12.4 `issubclass` bug — use union-with-default or plain `T`). **Parity lock**: `tests/test_unit.py::test_mcp_generate_mission_reuses_rest_planner` is an AST-only regression guard that the MCP `generate_mission` tool keeps importing `_plan_mission`, `MISSION_GO_SCORE_FLOOR`, `Mission`, and `MissionGenerateRequest` from `server` / `models` (and actually calls/constructs them). If anyone forks the planner for MCP-only behavior, the autonomous agent loop diverges from the dashboard loop silently — this test is the only thing that catches that drift.
+- **`species_id.py`** — species identification pipeline (image → candidate species + confidence). Called by AI routes; results get written to `db.species_identifications` AND signed into the provenance chain with `source_type="species_identification"`. Provenance write is wrapped in try/except — a chain failure must not fail the identification request itself (logged warning, observation skipped).
 
 The User document is intentionally **not** modeled — it's a raw Mongo doc keyed by `ObjectId`, with auth code converting on the way in/out. Don't try to "consolidate" it into models.py without rewriting `get_current_user`.
 
@@ -79,11 +82,34 @@ The User document is intentionally **not** modeled — it's a raw Mongo doc keye
 - All interactive elements need a `data-testid` in kebab-case.
 - Do **not** use external placeholder image services; use only the URLs listed in `design_guidelines.json`.
 
+### Redact-flag for signed observations (admin-gated)
+Observations are immutable on the chain — the signature is over the original payload bytes, so editing the payload would invalidate every downstream verification. But operators occasionally need to *suppress* a payload from public consumers (PII bleed-through, accidental coordinates of a poaching-risk species). The redact flag is the safe path: an admin sets `redacted=true`, `redacted_at`, `redaction_reason` on the observation document, and `_redact_for_public()` in `server.py` blanks the payload on the way out to any public endpoint (`/api/observations`, `/api/public/provenance/stats`, attestation roots). The signature still verifies against the *original* bytes, so auditors with a legitimate need can still confirm the observation existed and what it said — the public surface just hides it. Mutating the payload directly would corrupt the chain; always use the redact flag.
+
+## Deploy
+
+Production runs on **Railway** as two independent services (backend Python, frontend Node). The deploy contract lives in:
+- `backend/Procfile` — `web: uvicorn server:app --host 0.0.0.0 --port $PORT` (used when backend's Railway Root Directory is set to `backend/`).
+- `railpack.json` at repo root — node 22 builder + `serve -s build` for the frontend, **fallback** for when the frontend service's Root Directory got cleared and Railway falls back to repo root. Backend never sees this file because its Root Directory is pinned to `backend/`.
+- `docs/RAILWAY_PRODUCTION.md` — env-var checklist. Cookie auth in prod needs `COOKIE_SECURE=true` and `COOKIE_SAMESITE=none` (cross-site between frontend and backend Railway hostnames) plus `FRONTEND_URL` on the backend so CORS allowlists the frontend origin.
+- `scripts/railway-smoke.mjs` — post-deploy smoke test. Run after every prod deploy; "build succeeded" is not "feature works."
+
+GitHub auto-deploys main on push. There is no separate CI — the Railway build is the build.
+
+## Docs folder
+
+`docs/` is the auditor/pilot packet — these are external-facing documents, not internal design notes. Keep them current; auditors read them.
+- `METHODOLOGY_v0.1.md` — how the signed-observation chain works end-to-end (what gets signed, key publication, satellite cross-witness, redact flag). Referenced from `/gaia-prime`.
+- `THREAT_MODEL.md` — adversary analysis (insider attacks, MongoDB tamper, key compromise, satellite spoofing). Read before changing anything in `provenance.py` or the redact path.
+- `AUDITOR_WALKTHROUGH.md` — independent verification recipe (what to curl, what to hash, what to check).
+- `PILOT_ONBOARDING.md`, `PILOT_TERMS.md`, `DATA_HANDLING.md` — pilot-customer onboarding contract.
+- `OUTREACH.md` — auditor/pilot outreach templates.
+- `RAILWAY_PRODUCTION.md` — see "Deploy" above.
+
 ## Working Conventions Specific to This Repo
 
 - `test_result.md` is a structured agent-handoff file with a "DO NOT EDIT" header block. The main agent updates the YAML body; a separate testing agent reads it. Preserve the header verbatim if you touch this file.
 - `memory/` holds the PRD and the auto-generated `test_credentials.md`. Don't commit additional secrets here.
-- `gitignore.txt` (note: not `.gitignore`) is a reference file only — this directory isn't a git repo. There's no CI; "deploys" don't exist locally.
-- Default admin (per `backend/.env`): `admin@ecosystem.com` / `EcoAdmin2024!`. Useful for quick logins; rotate before exposing the backend.
-- The mock `emergentintegrations` package means AI features always return the same canned strings — when "the AI gave a suspiciously generic answer," that's why.
+- This **is** a git repo with a real `.gitignore`. Main deploys to Railway on push. Don't commit `.env` files or `memory/test_credentials.md` (already in `.gitignore`).
+- Default admin (per `backend/.env`): `admin@ecosystem.com` / `EcoAdmin2024!`. Useful for quick logins; rotate before exposing the backend. `ADMIN_FORCE_RESET=1` env var lets you recover from a forgotten admin password by re-seeding from `ADMIN_EMAIL`/`ADMIN_PASSWORD` on next boot.
+- The mock `emergentintegrations` package means AI features fall back to a deterministic stub if no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` is set — when "the AI gave a suspiciously generic answer," check whether a real provider key is configured.
 - `CLAUDE.md` (sibling file for Claude Code) is intentionally a near-duplicate of this file. When you change run/build/test commands, repo conventions, or the gotchas above, update both so the two agent harnesses stay in sync.
