@@ -14,6 +14,8 @@
 - The page is the auditor surface. Calm/technical voice. The existing subhead uses em-dashes (e.g., "Auditors — Verra, Gold Standard …") — the new copy continues that convention for consistency on this page only.
 - The page loads its three data sources (`publicAPI.getDashboard`, `provenanceAPI.getPublicKey`, `provenanceAPI.getStats`) via `Promise.allSettled`. The header (where this change lives) renders BEFORE the loading/error fork, so the visual smoke check works without a running backend.
 - Repo has uncommitted work tolerated, but this plan creates its own commit. Branch is `main`. If `git status` shows any unrelated dirty files at start, stop and surface to the user.
+- **Revert command** (use this any time a check below tells you to revert the edit and surface): `git restore frontend/src/pages/GaiaPrime.jsx`. After running it, `git status` should report a clean tree.
+- **Python invocation:** the plan uses `python3` which should resolve to the project's chosen interpreter. If `python3 -m pytest` fails with `No module named pytest`, fall back to `python3.13 -m pytest` (matches the interpreter the project's recent work pinned via graphify / last30days setup) — either is acceptable as long as `pip install -r backend/requirements.txt` was run for that interpreter.
 
 ---
 
@@ -109,6 +111,8 @@ Expected: no output (clean tree). If any unrelated files are dirty, stop and sur
 
 Critical: the indentation of the new `<p>` blocks matches the indentation of the existing block (12 spaces before each `<p>`). Verify after the edit.
 
+**Note on JSX whitespace:** the soft line-break positions inside the `<p>` blocks are NOT semantically meaningful — JSX collapses all runs of whitespace (newline + indentation spaces) into a single space at render time. The wrap points in `new_string` are chosen for readability of the source file; they do NOT have to match the line-wrap layout in the spec's §3 prose block. Only the text content (word-for-word) must match.
+
 - [ ] **Step 2: Confirm the edit landed correctly.**
 
 Run:
@@ -157,7 +161,7 @@ python3 - <<'PY'
 import re, pathlib
 src = pathlib.Path("frontend/src/pages/GaiaPrime.jsx").read_text()
 # Pull out both new paragraph blocks
-m = re.search(r'>Evidence layer for Verra Nature Credits\.(.*?)</p>\s*<p[^>]*>(.*?)</p>', src, re.S)
+m = re.search(r'>\s*Evidence layer for Verra Nature Credits\.(.*?)</p>\s*<p[^>]*>(.*?)</p>', src, re.S)
 assert m, "could not locate new paragraphs — edit may have failed"
 p1 = "Evidence layer for Verra Nature Credits." + m.group(1).strip()
 p2 = m.group(2).strip()
@@ -222,7 +226,13 @@ For each of `320px`, `768px`, `1440px`:
 - No text overflow, no layout collapse, no clipped content.
 - The "Public dashboard" button on the right of the header still renders without overlapping the paragraphs at 1440px.
 
-This step is the only one that requires a human eye. If running this plan via an agentic worker that cannot eyeball the browser, the worker should explicitly hand off to the user for this step and resume after sign-off.
+This step is the only one that requires a human eye. **Explicit handoff protocol for agentic workers:** if this plan is being executed by a subagent or automated worker that cannot operate a graphical browser, after Task 3 has passed, the worker MUST print the literal line
+
+```
+HUMAN VISUAL CHECK REQUIRED at /gaia-prime — pausing for sign-off
+```
+
+and stop. Do NOT proceed to Task 5. The worker resumes only after the user replies with explicit confirmation that the three breakpoints look correct (e.g., "visual ok", "looks good at all breakpoints"). Faking the visual confirmation is a CARL rule 2 violation ("NEVER mark tasks complete without validation").
 
 - [ ] **Step 3: Stop the dev server.**
 
@@ -240,8 +250,10 @@ Ctrl-C in the dev-server terminal (or kill the background process).
 
 Run from repo root:
 ```bash
-python3.13 -m pytest tests/test_unit.py -q
+python3 -m pytest tests/test_unit.py -q
 ```
+
+(If `python3 -m pytest` fails with `No module named pytest`, fall back to `python3.13 -m pytest tests/test_unit.py -q` — either interpreter works as long as `pip install -r backend/requirements.txt` has been run for it.)
 
 Expected output (last line):
 ```
