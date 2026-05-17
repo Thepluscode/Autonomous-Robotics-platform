@@ -274,11 +274,18 @@ export default function GaiaPrime() {
               Don't trust us. Verify us.
             </h1>
             <p className="text-sm text-muted-foreground max-w-2xl mt-3">
-              Every drone observation, soil reading, and species identification we record is
-              signed with an Ed25519 key whose public half is published below. Auditors —
-              Verra, Gold Standard, third-party reviewers — can fetch any observation,
-              recompute its hash, verify its signature, and re-derive the per-zone aggregate
-              root, all without a single API call needing a token from us.
+              Evidence layer for Verra Nature Credits. Verra's Nature Framework defines a
+              credit as one Quality Hectare of biodiversity uplift. This page is what makes
+              that uplift defensible. Every measurement that feeds a project's claim is
+              signed with the Ed25519 key below and chained by content hash. That includes
+              drone telemetry, soil sensors, satellite witnesses, and intervention
+              before/after observations. The retail critique of credit markets — "no way to
+              prove this credit wasn't redeemed twice" — doesn't survive a verifiable chain.
+            </p>
+            <p className="text-sm text-muted-foreground max-w-2xl mt-2">
+              Auditors fetch any observation, recompute its hash, and verify its signature
+              against the published key. Per-zone aggregate roots are re-derivable the same
+              way. None of it requires a token from us. The curl recipes are below.
             </p>
           </div>
           <Link to="/public" data-testid="back-to-public-dashboard">
