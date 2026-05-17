@@ -31,29 +31,34 @@ The H1 ("Don't trust us. Verify us.") is preserved unchanged. No other sections 
 
 ## 3. Drafted Copy (canonical)
 
-Both paragraphs reuse the existing wrapper styling: `<p className="text-sm text-muted-foreground max-w-2xl">…</p>`, stacked with `mt-3` / `mt-2` vertical spacing.
+Both paragraphs reuse the existing wrapper styling, with `mt-3` on paragraph 1 (preserving the current top spacing relative to the H1) and `mt-2` on paragraph 2:
 
-### Paragraph 1 — positioning (~75 words)
+- Paragraph 1: `<p className="text-sm text-muted-foreground max-w-2xl mt-3">…</p>`
+- Paragraph 2: `<p className="text-sm text-muted-foreground max-w-2xl mt-2">…</p>`
+
+### Paragraph 1 — positioning (~80 words, sentences capped at ≤21 words)
 
 ```
 Evidence layer for Verra Nature Credits. Verra's Nature Framework defines a credit
 as one Quality Hectare of biodiversity uplift. This page is what makes that uplift
-defensible: every measurement that feeds a project's claim — drone telemetry, soil
-sensor, satellite witness, intervention before/after — is signed with the Ed25519
-key below and chained by content hash. The retail critique of credit markets — "no
-way to prove this credit wasn't redeemed twice" — doesn't survive a verifiable chain.
+defensible. Every measurement that feeds a project's claim is signed with the
+Ed25519 key below and chained by content hash. That includes drone telemetry, soil
+sensors, satellite witnesses, and intervention before/after observations. The
+retail critique of credit markets — "no way to prove this credit wasn't redeemed
+twice" — doesn't survive a verifiable chain.
 ```
 
-### Paragraph 2 — mechanism (~40 words)
+### Paragraph 2 — mechanism (~36 words, sentences capped at ≤15 words)
 
 ```
-Auditors fetch any observation, recompute its hash, verify its signature against the
-published key, and re-derive the per-zone aggregate root — without a single API call
-requiring a token from us. The curl recipes are below.
+Auditors fetch any observation, recompute its hash, and verify its signature against
+the published key. Per-zone aggregate roots are re-derivable the same way. None of
+it requires a token from us. The curl recipes are below.
 ```
 
-Total ~115 words across both paragraphs; reading time ~30 seconds; matches the
-"understand the moat in 30 seconds" target stated in the brainstorm session.
+Total ~116 words across both paragraphs; reading time ~30 seconds; matches the
+"understand the moat in 30 seconds" target stated in the brainstorm session. All
+sentences honour the §4.2 ≤25-word cap.
 
 ## 4. Implementation Detail
 
@@ -117,13 +122,16 @@ to scan paragraph 2 or skip to the curl recipes below.
 - No `data-testid` change needed — the page-level `data-testid="gaia-prime-page"`
   already covers the surface.
 
-### 5.4 Sales-test (downstream usability check)
+### 5.4 Author self-check (not a merge gate)
 
-Paragraph 1 should be **quotable as-is** into the opening of a Verra / Gold
-Standard / Pachama cold-email — zero edits required. If it isn't, the framing is
-wrong and should be redrafted before commit. This is the explicit link between
-this spec and the next item on the roadmap (the `docs/AUDITOR_WALKTHROUGH.md`
-double-redemption rewrite, deferred to a separate session).
+Before commit, the author should be able to copy paragraph 1 into the opening of a
+Verra / Gold Standard / Pachama cold-email draft and feel the text reads as a
+finished opener without significant rewriting. This is a soft author signal, not
+an acceptance criterion — different readers will disagree on what "significant"
+means, so it is deliberately excluded from §9. The link from this spec to the
+next item on the roadmap (the `docs/AUDITOR_WALKTHROUGH.md` double-redemption
+rewrite, deferred to a separate session) is the shared vocabulary, not the exact
+sentence reuse.
 
 ## 6. Explicitly Out of Scope (YAGNI)
 
@@ -173,10 +181,11 @@ double-redemption rewrite, deferred to a separate session).
 A reviewer can mark this spec implemented when:
 
 1. `frontend/src/pages/GaiaPrime.jsx` contains both paragraphs (verbatim from §3),
-   stacked beneath the H1, with the styling described in §4.1.
+   stacked beneath the H1, with the styling described in §3 / §4.1.
 2. No other file in the repository is modified.
 3. The visual smoke check in §5.1 passes at all three breakpoints.
 4. The reading test in §5.2 lands in roughly 25 seconds for paragraph 1.
-5. The sales-test in §5.4 holds — paragraph 1 is quotable into a cold-email opener
-   with zero edits.
-6. Existing test suites pass unchanged.
+5. Every sentence in §3 paragraph 1 and paragraph 2 is at most 25 words long
+   (objectively checkable by counting).
+6. No banned vocabulary from §4.2 appears in either paragraph.
+7. Existing test suites pass unchanged.
