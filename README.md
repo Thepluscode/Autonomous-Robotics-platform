@@ -49,3 +49,12 @@ BACKEND_URL=http://localhost:8001 pytest tests/
 - Default local admin credentials are documented in `AGENTS.md`.
 - Add new API tests to `tests/test_api.py`; `backend_test.py` is legacy.
 - New Mongo write endpoints should use `insert_and_return` to avoid leaking Mongo `_id` values.
+
+## Docs
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — structural map: backend modules, frontend layout, data flows, trust boundaries, where to extend. Start here.
+- [`docs/METHODOLOGY_v0.1.md`](docs/METHODOLOGY_v0.1.md) — how the signed-observation chain works end-to-end.
+- [`docs/AUDITOR_WALKTHROUGH.md`](docs/AUDITOR_WALKTHROUGH.md) — independent verification recipe (curl + python, ~10 min).
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — adversary analysis. Read before touching `provenance.py`.
+- [`docs/RAILWAY_PRODUCTION.md`](docs/RAILWAY_PRODUCTION.md) — env-var checklist for prod deploys.
+- [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md) — operational gotchas for the agent harnesses.

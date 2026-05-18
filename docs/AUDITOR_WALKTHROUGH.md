@@ -4,6 +4,8 @@ This document walks a third-party reviewer (Verra, Gold Standard, Climate Action
 
 You will need: `curl`, `python3`, ~10 minutes.
 
+> For the structural map of the system that produces these signatures (which module signs what, where the key lives, what's public vs gated), see [`ARCHITECTURE.md`](ARCHITECTURE.md). For the cryptographic detail of what bytes are hashed and how the key is derived, see [`METHODOLOGY_v0.1.md`](METHODOLOGY_v0.1.md).
+
 ---
 
 ## What you are verifying
