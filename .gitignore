@@ -68,6 +68,9 @@ yarn.lock
 # Local MongoDB data directory
 data/db/
 
+# Local MongoDB binary download (dev-only, ~333MB — never commit)
+.mongo-local/
+
 # Auto-generated credential file (gated behind DEV_MODE)
 memory/test_credentials.md
 
