@@ -2,7 +2,7 @@
 
 > Companion to `DMRV_PARTNER_PROJECT_APPROACH.md`. Decision taken: **lead with Axis A** (natural fit, moat-preserving; accept non-priority pilot status). This is the §5 registry pull, scored against the §3 scorecard.
 >
-> **Confidence:** GS IDs/statuses below are from public sources (GS blog, registry summaries, press) — **verify each on `registry.goldstandard.org` before any outreach** (status can change; a "Listed/Design Certified" project meets the template's ≥listed bar, "Certified" exceeds it).
+> **Confidence:** GS IDs/statuses below are from public sources (GS blog, registry summaries, press). **Verification pass done 2026-06-06 — see the Verification section below.** The registry is a JS app (no machine-readable data / no public API), so these are independent-source corroborations, not registry-authoritative; final confirmation = open `registry.goldstandard.org` in a browser. **Sodo (row 3) is flagged as likely NOT Gold Standard and is dropped pending confirmation.**
 
 ---
 
@@ -19,7 +19,7 @@ Scorecard (§3): GS status ×3 · sensing fit ×3 · MRV pain ×2 · developer w
 |---|---|---|---|---|---|---|---|
 | **1** | **GrowGrounds Global Syntropic Agroforestry Program** | **GS13053** | Project **Design Certified** | GrowGrounds ApS (DK agritech) / multi-country coffee | Syntropic agroforestry, coffee monoculture → biodiverse system; 18–25 tCO₂e/ha | **52** | **Top pick.** Tech-forward agritech developer (high pilot willingness), biodiversity+soil+carbon, recent cert. Sensing is load-bearing. Start here. |
 | 2 | SEKEM Tree Project | GS4894 | Certified **Design** | SEKEM (biodynamic) / Egypt | Desert agroforestry / greening | 45 | Established, accessible org; agroforestry fits drone+in-situ; arid-zone sensing is clean. Strong #2. |
-| 3 | Sodo Ethiopia Reforestation | GS3007 | **Certified** | World Vision / Ethiopia | A/R reforestation | 44 | Fully certified + reputable, but large-NGO developer = slower to pilot; established MRV = lower digitisation upside. |
+| ~~3~~ | ~~Sodo Ethiopia Reforestation~~ | ~~GS3007~~ | ⚠️ **disputed** | World Vision / Ethiopia | A/R reforestation | — | **DROPPED (2026-06-06 verification): likely NOT Gold Standard** — corroboration points to CarbonFix + CCB (REDD DB #346), consistent with the World Vision Humbo/Sodo CDM/CCB lineage. Confirm on the GS registry before any use. |
 | 4 | EcoMakala Virunga Reforestation | GS5618 | **Certified** | WWF / DR Congo (Virunga) | A/R reforestation | 47* | Best biodiversity narrative (iconic). *Score inflated — DRC conflict zone makes a sensing pilot operationally hard; rubric under-weights this. **Backup, not lead.** |
 
 *Plus GS IDs **11798 / 11856** surfaced as "Listed" A/R but unnamed — resolve names on the registry; TERRAGRN (Mpumalanga SA agroforestry, GS+R20) appeared but **no GS ID confirmed → likely not yet registered → fails the hard gate** until it is.*
@@ -50,8 +50,22 @@ On the pure rubric, **NetZeroAg (54) edges GrowGrounds (52)** — it's fully cer
 
 ---
 
+## Verification status (2026-06-06)
+
+Registry detail pages are a JS SPA (empty to a fetch) and no public JSON API responded — so these are **independent-source corroborations**, not registry-authoritative. Final word: open `registry.goldstandard.org` and search the GS ID.
+
+| Candidate | GS ID | Verification |
+|---|---|---|
+| GrowGrounds | GS13053 | ✅ **Strong** — 3+ independent sources incl. GrowGrounds' own GS4GG VPA (Kenya, 5,800 farmers, 1.1M trees). Design-Certified / Listed. **Lead confirmed.** |
+| SEKEM Tree | GS4894 | ✅ Good — SEKEM's own site ("first GS-certified project in Egypt & Middle East"); Certified Design, ~5k credits/yr. |
+| EcoMakala | GS5618 | ✅ Good — CO2logic/WWF Virunga; GS Certified, ~17k credits/yr. (Remains the DRC-feasibility backup.) |
+| NetZeroAg (Pakistan rice) | GS3785 **(number unconfirmed)** | ✅ **Project** verified via GS's own announcements (46,714 credits, 17-Dec-2025, AWD, 2,000 farmers, Govt-Pakistan Art.6/CORSIA LoI) — but **no source confirms the exact ID 3785.** Confirm the number on the registry. |
+| ~~Sodo~~ | ~~GS3007~~ | ⚠️ **DROPPED** — likely CarbonFix + CCB (REDD DB #346), not Gold Standard. |
+
+**Net:** 3 Axis-A candidates verified (GrowGrounds, SEKEM, EcoMakala); B-lead project verified, its ID pending; Sodo removed. Confidence is high enough to proceed to outreach on GrowGrounds; do a 5-minute browser registry check first.
+
 ## Next actions
-1. **Verify** GS13053 + GS4894/3007/5618 status on `registry.goldstandard.org` (confidence caveat above).
+1. **Confirm in a browser** on `registry.goldstandard.org`: GS13053 (lead), and the NetZeroAg ID (search "NetZeroAg" / "rice Pakistan"). GS4894/GS5618 corroborated already.
 2. **Outreach to GrowGrounds first** — joint-pilot framing (`APPROACH §4`): independent offline-verifiable MRV, tamper-evident cross-witness, higher cadence at lower cost, a live GS dMRV pilot entry for them. Cost to them: one pilot zone + data access + a named contact.
 3. On a yes: MoU + pilot zone → close **R3 for that zone's measurands** (`MEASUREMENT_SPEC_v0.1.md`, real sensors) → co-author the dMRV Solution & Implementation Plan → submit (rolling, to 30-Oct-2026).
 
