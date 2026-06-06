@@ -33,8 +33,20 @@ Scorecard (§3): GS status ×3 · sensing fit ×3 · MRV pain ×2 · developer w
 
 ---
 
-## B-axis hedge (not yet pulled)
-Per the approach, keep one **rice-methane water-management** (priority) candidate as a fast-track hedge. Not searched yet — say the word and I'll pull 1–2 registered rice projects to sit alongside this list.
+## B-axis hedge — rice methane (PRIORITY methodology)
+
+Methodology: **GS "Methane Emission Reduction by Adjusted Water Management Practice in Rice Cultivation" (Doc 437 v1.0)**, adapted from CDM AMS-III.AU, **IRRI/DFAT-developed, ICVCM CCP-approved** (premium-integrity label). Same scorecard.
+
+| # | Project | GS ID | Status | Developer / Country | Score | Read |
+|---|---|---|---|---|---|---|
+| **B1** | **NetZeroAg rice methane (AWD)** | **GS3785** | **Issuing / Certified** | NetZeroAg / Pakistan | **54** | **First-ever GS rice-methane issuance** (46,714 credits, Dec 2025; 2,000→3,000 smallholders). Priority methodology **and** the exact MRV pain — proving thousands of smallholders actually ran intermittent flooding (AWD) — that **satellite flood/drain witness + signed in-situ water sensors uniquely solve.** Tech-forward developer needing scalable MRV. |
+
+More candidates via the registry rice filter: `registry.goldstandard.org/projects?q=rice` (also India, Vietnam, Bangladesh, Indonesia, etc.).
+
+### The honest tension this surfaces
+On the pure rubric, **NetZeroAg (54) edges GrowGrounds (52)** — it's fully certified (vs design-certified) and priority-weighted, *even though priority is weighted ×1*. That tells you the **rice lane is genuinely the strongest pilot-fit**: a priority methodology whose hardest MRV problem (smallholder AWD verification, fraud-prone) is precisely what GAIA-PRIME's cross-witness chain addresses.
+
+**The decision to lead with A is therefore a *strategic* choice, not a data-driven one:** GrowGrounds preserves the biodiversity moat/narrative (species ID, rewilding); NetZeroAg is **pure agriculture-carbon** — no species, no rewilding, a real narrative stretch (§6's rejected "Option 2" in microcosm). Per your call (lead A) and §6 (don't dilute the Verra-Nature hero), **GrowGrounds stays primary; NetZeroAg is the documented fast-track hedge** — activate it only if the working group signals priority-only fast-tracking or if a paying rice partner materialises before a forestry one.
 
 ---
 
