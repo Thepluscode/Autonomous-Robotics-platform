@@ -1392,7 +1392,7 @@ def _deserialize_robot(robot: dict) -> dict:
 
 
 @api_router.get("/robots", response_model=List[Robot])
-async def get_robots(robot_type: Optional[str] = None, status: Optional[str] = None):
+async def get_robots(robot_type: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {}
     if robot_type:
         query["robot_type"] = _normalize_robot_type(robot_type)
@@ -1417,7 +1417,7 @@ _ROBOT_FEED_LABEL = {
 _ROBOT_ACTIVE_STATUSES = {"deployed", "patrolling", "mapping", "sampling", "tasking", "active"}
 
 @api_router.get("/robots/feeds")
-async def get_robot_feeds():
+async def get_robot_feeds(user: dict = Depends(get_current_user)):
     """Returns one feed entry per active robot across all domains. Aerial
     robots reuse ZONE_FEED_IMAGES (canopy imagery); other domains carry a
     feed_type tag so the UI can render an appropriate placeholder until
@@ -1446,7 +1446,7 @@ async def get_robot_feeds():
 
 
 @api_router.get("/robots/{robot_id}", response_model=Robot)
-async def get_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+async def get_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN), user: dict = Depends(get_current_user)):
     robot = await db.robots.find_one({"id": robot_id}, {"_id": 0})
     if not robot:
         raise HTTPException(status_code=404, detail="Robot not found")
@@ -1454,7 +1454,7 @@ async def get_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
 
 
 @api_router.post("/robots", response_model=Robot)
-async def create_robot(robot_data: RobotCreate):
+async def create_robot(robot_data: RobotCreate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     data = robot_data.model_dump()
     data["robot_type"] = _normalize_robot_type(data.get("robot_type", "aerial"))
     robot = Robot(**data)
@@ -1466,7 +1466,7 @@ async def create_robot(robot_data: RobotCreate):
 
 
 @api_router.put("/robots/{robot_id}", response_model=Robot)
-async def update_robot(update_data: RobotUpdate, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+async def update_robot(update_data: RobotUpdate, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN), user: dict = Depends(require_role(["admin", "field_operator"]))):
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
@@ -1482,7 +1482,7 @@ async def update_robot(update_data: RobotUpdate, robot_id: str = Path(..., patte
 
 
 @api_router.delete("/robots/{robot_id}")
-async def delete_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+async def delete_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN), user: dict = Depends(require_role(["admin"]))):
     result = await db.robots.delete_one({"id": robot_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Robot not found")
@@ -1490,7 +1490,7 @@ async def delete_robot(robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
 
 
 @api_router.post("/robots/{robot_id}/task", response_model=Robot)
-async def task_robot(task: RobotTaskRequest, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
+async def task_robot(task: RobotTaskRequest, robot_id: str = Path(..., pattern=_UUID_ID_PATTERN), user: dict = Depends(require_role(["admin", "field_operator"]))):
     if task.zone_id:
         zone = await db.zones.find_one({"id": task.zone_id}, {"_id": 0})
         if not zone:
@@ -1518,7 +1518,7 @@ async def task_robot(task: RobotTaskRequest, robot_id: str = Path(..., pattern=_
 # ==================== EXISTING ENDPOINTS (PRESERVED) ====================
 
 @api_router.get("/drones", response_model=List[Drone])
-async def get_drones():
+async def get_drones(user: dict = Depends(get_current_user)):
     drones = await db.drones.find({}, {"_id": 0}).to_list(1000)
     for drone in drones:
         deserialize_datetime(drone, ['created_at', 'last_active'])
@@ -1535,7 +1535,7 @@ ZONE_FEED_IMAGES = {
 }
 
 @api_router.get("/drones/feeds")
-async def get_drone_camera_feeds():
+async def get_drone_camera_feeds(user: dict = Depends(get_current_user)):
     drones = await db.drones.find({"status": {"$in": ["deployed", "patrolling"]}}, {"_id": 0}).to_list(100)
     feeds = []
     for drone in drones:
@@ -1556,7 +1556,7 @@ async def get_drone_camera_feeds():
 _DRONE_ID_PATTERN = _UUID_ID_PATTERN
 
 @api_router.get("/drones/{drone_id}", response_model=Drone)
-async def get_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
+async def get_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN), user: dict = Depends(get_current_user)):
     drone = await db.drones.find_one({"id": drone_id}, {"_id": 0})
     if not drone:
         raise HTTPException(status_code=404, detail="Drone not found")
@@ -1564,7 +1564,7 @@ async def get_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
     return drone
 
 @api_router.post("/drones", response_model=Drone)
-async def create_drone(drone_data: DroneCreate):
+async def create_drone(drone_data: DroneCreate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     drone = Drone(**drone_data.model_dump())
     doc = drone.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -1573,7 +1573,7 @@ async def create_drone(drone_data: DroneCreate):
     return drone
 
 @api_router.put("/drones/{drone_id}", response_model=Drone)
-async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
+async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN), user: dict = Depends(require_role(["admin", "field_operator"]))):
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
@@ -1586,14 +1586,14 @@ async def update_drone(update_data: DroneUpdate, drone_id: str = Path(..., patte
     return drone
 
 @api_router.delete("/drones/{drone_id}")
-async def delete_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN)):
+async def delete_drone(drone_id: str = Path(..., pattern=_DRONE_ID_PATTERN), user: dict = Depends(require_role(["admin"]))):
     result = await db.drones.delete_one({"id": drone_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Drone not found")
     return {"message": "Drone deleted successfully"}
 
 @api_router.post("/drones/deploy")
-async def deploy_drones(request: DeployMissionRequest):
+async def deploy_drones(request: DeployMissionRequest, user: dict = Depends(require_role(["admin", "field_operator"]))):
     zone = await db.zones.find_one({"id": request.zone_id}, {"_id": 0})
     if not zone:
         raise HTTPException(status_code=404, detail="Zone not found")
@@ -1628,7 +1628,7 @@ async def deploy_drones(request: DeployMissionRequest):
 
 
 @api_router.post("/robots/deploy")
-async def deploy_robots(request: RobotDeployRequest):
+async def deploy_robots(request: RobotDeployRequest, user: dict = Depends(require_role(["admin", "field_operator"]))):
     """Multi-domain deploy. Updates every robot in the request to status
     `deployed` against the target zone, regardless of domain. Emits one
     summary alert tagged with the modal asset_type so the audit log
