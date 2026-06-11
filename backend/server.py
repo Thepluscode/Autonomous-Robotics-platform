@@ -1265,8 +1265,9 @@ async def create_comment(entity_type: str, entity_id: str, content: str, request
 # ==================== REPORTING ENDPOINTS ====================
 
 @api_router.get("/reports/export/{report_type}")
-async def export_report(report_type: str, format: str = "json"):
+async def export_report(report_type: str, request: Request, format: str = "json"):
     """Export data as JSON (CSV/PDF would need additional libraries)"""
+    user = await get_current_user(request)
     
     if report_type == "zones":
         data = await db.zones.find({}, {"_id": 0}).to_list(1000)
@@ -1303,8 +1304,9 @@ async def export_report(report_type: str, format: str = "json"):
     return {"data": data, "count": len(data)}
 
 @api_router.get("/reports/summary")
-async def get_summary_report():
+async def get_summary_report(request: Request):
     """Generate comprehensive summary report"""
+    user = await get_current_user(request)
     zones = await db.zones.find({}, {"_id": 0}).to_list(100)
     drones = await db.drones.find({}, {"_id": 0}).to_list(100)
     patrols = await db.patrol_schedules.find({}, {"_id": 0}).to_list(100)
@@ -2426,7 +2428,8 @@ async def create_sensor(sensor_data: SensorCreate, user: dict = Depends(require_
 
 # Alert endpoints
 @api_router.get("/alerts", response_model=List[Alert])
-async def get_alerts(unread_only: bool = False):
+async def get_alerts(request: Request, unread_only: bool = False):
+    user = await get_current_user(request)
     query = {"is_read": False} if unread_only else {}
     alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
     for alert in alerts:
@@ -2434,7 +2437,10 @@ async def get_alerts(unread_only: bool = False):
     return alerts
 
 @api_router.post("/alerts", response_model=Alert)
-async def create_alert(alert_data: AlertCreate):
+async def create_alert(alert_data: AlertCreate, request: Request):
+    user = await get_current_user(request)
+    if user.get("role") not in ["admin", "field_operator"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     alert = Alert(**alert_data.model_dump())
     doc = alert.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -2442,12 +2448,14 @@ async def create_alert(alert_data: AlertCreate):
     return alert
 
 @api_router.put("/alerts/{alert_id}/read")
-async def mark_alert_read(alert_id: str):
+async def mark_alert_read(alert_id: str, request: Request):
+    user = await get_current_user(request)
     await db.alerts.update_one({"id": alert_id}, {"$set": {"is_read": True}})
     return {"message": "Alert marked as read"}
 
 @api_router.put("/alerts/read-all")
-async def mark_all_alerts_read():
+async def mark_all_alerts_read(request: Request):
+    user = await get_current_user(request)
     await db.alerts.update_many({}, {"$set": {"is_read": True}})
     return {"message": "All alerts marked as read"}
 
@@ -2512,7 +2520,8 @@ async def get_ai_history():
 
 # Dashboard
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
-async def get_dashboard_stats():
+async def get_dashboard_stats(request: Request):
+    user = await get_current_user(request)
     drones = await db.drones.find({}, {"_id": 0}).to_list(1000)
     robots = await db.robots.find({}, {"_id": 0}).to_list(2000)
     zones = await db.zones.find({}, {"_id": 0}).to_list(1000)
@@ -2547,7 +2556,8 @@ async def get_dashboard_stats():
     )
 
 @api_router.get("/dashboard/trends")
-async def get_trends():
+async def get_trends(request: Request):
+    user = await get_current_user(request)
     return {
         "biodiversity": [{"month": m, "value": 0.42 + i*0.03} for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun"])],
         "soil_health": [{"month": m, "value": 0.38 + i*0.03} for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun"])],
@@ -2844,7 +2854,8 @@ async def get_species_stats(user: dict = Depends(get_current_user)):
 
 # Notifications
 @api_router.post("/notifications/subscribe")
-async def subscribe_to_notifications(email: str, name: str = ""):
+async def subscribe_to_notifications(request: Request, email: str, name: str = ""):
+    user = await get_current_user(request)
     await db.email_subscriptions.update_one(
         {"email": email},
         {"$set": {"name": name, "is_active": True, "subscribed_to": ["critical_alert"]}},
@@ -2853,11 +2864,13 @@ async def subscribe_to_notifications(email: str, name: str = ""):
     return {"message": "Subscribed"}
 
 @api_router.get("/notifications/subscriptions")
-async def get_subscriptions():
+async def get_subscriptions(request: Request):
+    user = await get_current_user(request)
     return await db.email_subscriptions.find({"is_active": True}, {"_id": 0}).to_list(100)
 
 @api_router.get("/notifications/history")
-async def get_notification_history():
+async def get_notification_history(request: Request):
+    user = await get_current_user(request)
     return await db.email_notifications.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
 
 # Seed data

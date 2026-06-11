@@ -625,16 +625,8 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     # AI / analytics
     ("GET", "/api/ai/history"),
     ("POST", "/api/ai/analyze"),
-    # Alerts
-    ("GET", "/api/alerts"),
-    ("POST", "/api/alerts"),
-    ("PUT", "/api/alerts/read-all"),
-    ("PUT", "/api/alerts/{alert_id}/read"),
     # Comments — read-only side; POST is already gated
     ("GET", "/api/comments/{entity_type}/{entity_id}"),
-    # Dashboard
-    ("GET", "/api/dashboard/stats"),
-    ("GET", "/api/dashboard/trends"),
     # Forecasts
     ("GET", "/api/forecasts"),
     ("GET", "/api/forecasts/{zone_id}"),
@@ -652,10 +644,6 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     # Missions — only the read side; mutations are already gated
     ("GET", "/api/missions"),
     ("GET", "/api/missions/{mission_id}"),
-    # Notifications
-    ("GET", "/api/notifications/history"),
-    ("GET", "/api/notifications/subscriptions"),
-    ("POST", "/api/notifications/subscribe"),
     # Patrols
     ("GET", "/api/patrols"),
     ("GET", "/api/patrols/reports"),
@@ -663,9 +651,6 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     ("DELETE", "/api/patrols/{patrol_id}"),
     ("POST", "/api/patrols/generate"),
     ("POST", "/api/patrols/{patrol_id}/complete"),
-    # Reports
-    ("GET", "/api/reports/export/{report_type}"),
-    ("GET", "/api/reports/summary"),
     # Weather
     ("GET", "/api/weather"),
     ("GET", "/api/weather/{zone_id}"),
