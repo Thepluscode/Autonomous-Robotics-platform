@@ -635,14 +635,6 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     # Dashboard
     ("GET", "/api/dashboard/stats"),
     ("GET", "/api/dashboard/trends"),
-    # Drones
-    ("GET", "/api/drones"),
-    ("GET", "/api/drones/feeds"),
-    ("GET", "/api/drones/{drone_id}"),
-    ("POST", "/api/drones"),
-    ("PUT", "/api/drones/{drone_id}"),
-    ("DELETE", "/api/drones/{drone_id}"),
-    ("POST", "/api/drones/deploy"),
     # Forecasts
     ("GET", "/api/forecasts"),
     ("GET", "/api/forecasts/{zone_id}"),
@@ -674,15 +666,6 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     # Reports
     ("GET", "/api/reports/export/{report_type}"),
     ("GET", "/api/reports/summary"),
-    # Robots
-    ("GET", "/api/robots"),
-    ("GET", "/api/robots/feeds"),
-    ("GET", "/api/robots/{robot_id}"),
-    ("POST", "/api/robots"),
-    ("PUT", "/api/robots/{robot_id}"),
-    ("DELETE", "/api/robots/{robot_id}"),
-    ("POST", "/api/robots/deploy"),
-    ("POST", "/api/robots/{robot_id}/task"),
     # Sensors
     ("GET", "/api/sensors"),
     ("POST", "/api/sensors"),
