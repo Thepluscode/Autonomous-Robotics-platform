@@ -2366,14 +2366,14 @@ async def complete_mission(request: Request, mission_id: str = Path(..., pattern
 
 # Zone endpoints
 @api_router.get("/zones", response_model=List[Zone])
-async def get_zones():
+async def get_zones(user: dict = Depends(get_current_user)):
     zones = await db.zones.find({}, {"_id": 0}).to_list(1000)
     for zone in zones:
         deserialize_datetime(zone, ['created_at'])
     return zones
 
 @api_router.get("/zones/{zone_id}", response_model=Zone)
-async def get_zone(zone_id: str):
+async def get_zone(zone_id: str, user: dict = Depends(get_current_user)):
     zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
     if not zone:
         raise HTTPException(status_code=404, detail="Zone not found")
@@ -2381,7 +2381,7 @@ async def get_zone(zone_id: str):
     return zone
 
 @api_router.post("/zones", response_model=Zone)
-async def create_zone(zone_data: ZoneCreate):
+async def create_zone(zone_data: ZoneCreate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     zone = Zone(**zone_data.model_dump())
     doc = zone.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -2389,7 +2389,7 @@ async def create_zone(zone_data: ZoneCreate):
     return zone
 
 @api_router.put("/zones/{zone_id}", response_model=Zone)
-async def update_zone(zone_id: str, update_data: ZoneUpdate):
+async def update_zone(zone_id: str, update_data: ZoneUpdate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
@@ -2401,7 +2401,7 @@ async def update_zone(zone_id: str, update_data: ZoneUpdate):
     return zone
 
 @api_router.delete("/zones/{zone_id}")
-async def delete_zone(zone_id: str):
+async def delete_zone(zone_id: str, user: dict = Depends(require_role(["admin"]))):
     result = await db.zones.delete_one({"id": zone_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Zone not found")
@@ -2409,14 +2409,14 @@ async def delete_zone(zone_id: str):
 
 # Sensor endpoints
 @api_router.get("/sensors", response_model=List[Sensor])
-async def get_sensors():
+async def get_sensors(user: dict = Depends(get_current_user)):
     sensors = await db.sensors.find({}, {"_id": 0}).to_list(1000)
     for sensor in sensors:
         deserialize_datetime(sensor, ['created_at', 'last_reading'])
     return sensors
 
 @api_router.post("/sensors", response_model=Sensor)
-async def create_sensor(sensor_data: SensorCreate):
+async def create_sensor(sensor_data: SensorCreate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     sensor = Sensor(**sensor_data.model_dump())
     doc = sensor.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -2785,12 +2785,12 @@ async def _identify_species_from_image(
     return identification
 
 @api_router.post("/species/identify")
-async def identify_species(image_url: str, zone_id: Optional[str] = None):
+async def identify_species(image_url: str, zone_id: Optional[str] = None, user: dict = Depends(require_role(["admin", "field_operator", "scientist"]))):
     identification = await _identify_species_from_image(image_url, zone_id)
     return await insert_and_return(db.species_identifications, identification)
 
 @api_router.post("/species/identify-upload")
-async def identify_species_upload(payload: SpeciesUploadRequest):
+async def identify_species_upload(payload: SpeciesUploadRequest, user: dict = Depends(require_role(["admin", "field_operator", "scientist"]))):
     data_url = (payload.image_data_url or "").strip()
     if not data_url.startswith("data:image/") or ";base64," not in data_url:
         raise HTTPException(status_code=400, detail="Uploaded image must be a base64 image data URL")
@@ -2820,7 +2820,7 @@ async def identify_species_upload(payload: SpeciesUploadRequest):
     return await insert_and_return(db.species_identifications, identification)
 
 @api_router.get("/species/identifiers")
-async def get_species_identifiers():
+async def get_species_identifiers(user: dict = Depends(get_current_user)):
     """Surfaces which species classifier is active so frontend / auditors
     can distinguish a deterministic-v1 ID from a real BioCLIP one. The
     `bioclip` slot is gated on SPECIES_IDENTIFIER=bioclip + torch +
@@ -2829,11 +2829,11 @@ async def get_species_identifiers():
 
 
 @api_router.get("/species/history")
-async def get_species_identifications():
+async def get_species_identifications(user: dict = Depends(get_current_user)):
     return await db.species_identifications.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
 
 @api_router.get("/species/stats")
-async def get_species_stats():
+async def get_species_stats(user: dict = Depends(get_current_user)):
     identifications = await db.species_identifications.find({}, {"_id": 0}).to_list(1000)
     return {
         "total_identifications": len(identifications),

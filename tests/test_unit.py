@@ -666,24 +666,9 @@ W2_UNGATED_BACKLOG: frozenset = frozenset({
     # Reports
     ("GET", "/api/reports/export/{report_type}"),
     ("GET", "/api/reports/summary"),
-    # Sensors
-    ("GET", "/api/sensors"),
-    ("POST", "/api/sensors"),
-    # Species
-    ("GET", "/api/species/history"),
-    ("GET", "/api/species/identifiers"),
-    ("GET", "/api/species/stats"),
-    ("POST", "/api/species/identify"),
-    ("POST", "/api/species/identify-upload"),
     # Weather
     ("GET", "/api/weather"),
     ("GET", "/api/weather/{zone_id}"),
-    # Zones
-    ("GET", "/api/zones"),
-    ("GET", "/api/zones/{zone_id}"),
-    ("POST", "/api/zones"),
-    ("PUT", "/api/zones/{zone_id}"),
-    ("DELETE", "/api/zones/{zone_id}"),
 })
 
 
