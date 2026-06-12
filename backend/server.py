@@ -634,7 +634,7 @@ def generate_mock_weather(zone: dict) -> dict:
     }
 
 @api_router.get("/weather")
-async def get_all_weather():
+async def get_all_weather(user: dict = Depends(get_current_user)):
     """Get weather for all zones (MOCKED)"""
     zones = await db.zones.find({}, {"_id": 0}).to_list(100)
     weather_data = []
@@ -643,7 +643,7 @@ async def get_all_weather():
     return weather_data
 
 @api_router.get("/weather/{zone_id}")
-async def get_zone_weather(zone_id: str):
+async def get_zone_weather(zone_id: str, user: dict = Depends(get_current_user)):
     """Get weather for specific zone (MOCKED)"""
     zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
     if not zone:
@@ -653,7 +653,7 @@ async def get_zone_weather(zone_id: str):
 # ==================== INTERVENTION RULES ENDPOINTS ====================
 
 @api_router.get("/interventions/rules")
-async def get_intervention_rules():
+async def get_intervention_rules(user: dict = Depends(get_current_user)):
     rules = await db.intervention_rules.find({}, {"_id": 0}).to_list(100)
     return rules
 
@@ -681,7 +681,7 @@ async def delete_intervention_rule(rule_id: str, request: Request):
     return {"message": "Rule deleted"}
 
 @api_router.post("/interventions/check")
-async def check_interventions():
+async def check_interventions(user: dict = Depends(get_current_user)):
     """Check all intervention rules and trigger actions"""
     rules = await db.intervention_rules.find({"is_active": True}, {"_id": 0}).to_list(100)
     zones = await db.zones.find({}, {"_id": 0}).to_list(100)
@@ -816,7 +816,7 @@ def _zone_state_snapshot(zone: dict) -> dict:
 
 
 @api_router.get("/interventions/actions")
-async def list_intervention_actions():
+async def list_intervention_actions(user: dict = Depends(get_current_user)):
     """Catalog of executable verbs. Frontend / MCP agents introspect
     this to know what `/interventions/execute` accepts."""
     return {
@@ -965,6 +965,7 @@ async def list_interventions(
     robot_id: Optional[str] = None,
     action: Optional[str] = None,
     limit: int = 50,
+    user: dict = Depends(get_current_user),
 ):
     query: dict = {}
     if zone_id:
@@ -978,7 +979,7 @@ async def list_interventions(
 
 
 @api_router.get("/interventions/{intervention_id}")
-async def get_intervention(intervention_id: str = Path(..., pattern=_INTERVENTION_ID_PATTERN)):
+async def get_intervention(intervention_id: str = Path(..., pattern=_INTERVENTION_ID_PATTERN), user: dict = Depends(get_current_user)):
     """Returns the intervention record plus cryptographic verification
     of all three linked observations. Auditor flow: GET this → confirm
     the three observation IDs match the digests → verify each via
@@ -1003,7 +1004,7 @@ async def get_intervention(intervention_id: str = Path(..., pattern=_INTERVENTIO
 # ==================== FORECASTING ENDPOINTS ====================
 
 @api_router.post("/forecasts/generate/{zone_id}")
-async def generate_forecast(zone_id: str):
+async def generate_forecast(zone_id: str, user: dict = Depends(require_role(["admin", "scientist", "field_operator"]))):
     """Generate ecosystem forecast for a zone using AI"""
     zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
     if not zone:
@@ -1098,12 +1099,12 @@ Provide 2-3 sentence summary with key recommendations."""
     return forecasts
 
 @api_router.get("/forecasts")
-async def get_forecasts():
+async def get_forecasts(user: dict = Depends(get_current_user)):
     forecasts = await db.forecasts.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return forecasts
 
 @api_router.get("/forecasts/{zone_id}")
-async def get_zone_forecasts(zone_id: str):
+async def get_zone_forecasts(zone_id: str, user: dict = Depends(get_current_user)):
     forecasts = await db.forecasts.find({"zone_id": zone_id}, {"_id": 0}).sort("created_at", -1).to_list(10)
     return forecasts
 
@@ -1113,6 +1114,7 @@ async def counterfactual_forecast(
     zone_id: str,
     mission_type: Optional[str] = None,
     horizon_days: int = 14,
+    user: dict = Depends(get_current_user),
 ):
     """Chart-ready counterfactual: paired no-deploy / with-deploy biodiversity
     trajectories with 80% confidence bands.
@@ -1132,7 +1134,7 @@ async def counterfactual_forecast(
 # ==================== GEOFENCING ENDPOINTS ====================
 
 @api_router.get("/geofences")
-async def get_geofences():
+async def get_geofences(user: dict = Depends(get_current_user)):
     geofences = await db.geofences.find({}, {"_id": 0}).to_list(100)
     return geofences
 
@@ -1157,7 +1159,7 @@ async def delete_geofence(fence_id: str, request: Request):
     return {"message": "Geofence deleted"}
 
 @api_router.post("/geofences/check")
-async def check_geofence_violations():
+async def check_geofence_violations(user: dict = Depends(get_current_user)):
     """Check if any drones are violating geofences"""
     geofences = await db.geofences.find({"alerts_enabled": True}, {"_id": 0}).to_list(100)
     drones = await db.drones.find({"status": {"$in": ["deployed", "patrolling"]}}, {"_id": 0}).to_list(100)
@@ -1240,7 +1242,7 @@ async def delete_task(task_id: str, request: Request):
     return {"message": "Task deleted"}
 
 @api_router.get("/comments/{entity_type}/{entity_id}")
-async def get_comments(entity_type: str, entity_id: str):
+async def get_comments(entity_type: str, entity_id: str, user: dict = Depends(get_current_user)):
     comments = await db.comments.find(
         {"entity_type": entity_type, "entity_id": entity_id},
         {"_id": 0}
@@ -2272,12 +2274,12 @@ async def generate_mission(req: MissionGenerateRequest, request: Request):
     return saved
 
 @api_router.get("/missions", response_model=List[Mission])
-async def get_missions():
+async def get_missions(user: dict = Depends(get_current_user)):
     missions = await db.missions.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return [_deserialize_mission(mission) for mission in missions]
 
 @api_router.get("/missions/{mission_id}", response_model=Mission)
-async def get_mission(mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN)):
+async def get_mission(mission_id: str = Path(..., pattern=_MISSION_ID_PATTERN), user: dict = Depends(get_current_user)):
     mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
     if not mission:
         raise HTTPException(status_code=404, detail="Mission not found")
@@ -2461,7 +2463,7 @@ async def mark_all_alerts_read(request: Request):
 
 # AI Analysis
 @api_router.post("/ai/analyze", response_model=AIAnalysisResponse)
-async def analyze_ecosystem(request: AIAnalysisRequest):
+async def analyze_ecosystem(request: AIAnalysisRequest, user: dict = Depends(require_role(["admin", "scientist", "field_operator"]))):
     zones_data = []
     if request.zone_id:
         zone = await db.zones.find_one({"id": request.zone_id}, {"_id": 0})
@@ -2512,7 +2514,7 @@ Zone Details:"""
     return response
 
 @api_router.get("/ai/history", response_model=List[AIAnalysisResponse])
-async def get_ai_history():
+async def get_ai_history(user: dict = Depends(get_current_user)):
     analyses = await db.ai_analyses.find({}, {"_id": 0}).sort("created_at", -1).to_list(20)
     for analysis in analyses:
         deserialize_datetime(analysis, ['created_at'])
@@ -2567,14 +2569,14 @@ async def get_trends(request: Request):
 
 # Patrols (abbreviated - keep existing patrol endpoints)
 @api_router.get("/patrols")
-async def get_patrol_schedules():
+async def get_patrol_schedules(user: dict = Depends(get_current_user)):
     schedules = await db.patrol_schedules.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
     for schedule in schedules:
         deserialize_datetime(schedule, ['created_at'])
     return schedules
 
 @api_router.post("/patrols/generate")
-async def generate_patrol_schedule(request: PatrolScheduleCreate):
+async def generate_patrol_schedule(request: PatrolScheduleCreate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     zones = await db.zones.find({}, {"_id": 0}).to_list(100)
     if not zones:
         raise HTTPException(status_code=400, detail="No zones available")
@@ -2619,7 +2621,7 @@ async def generate_patrol_schedule(request: PatrolScheduleCreate):
     return await insert_and_return(db.patrol_schedules, doc)
 
 @api_router.put("/patrols/{patrol_id}")
-async def update_patrol_schedule(patrol_id: str, update: PatrolScheduleUpdate):
+async def update_patrol_schedule(patrol_id: str, update: PatrolScheduleUpdate, user: dict = Depends(require_role(["admin", "field_operator"]))):
     update_dict = {k: v for k, v in update.model_dump().items() if v is not None}
     if update_dict:
         await db.patrol_schedules.update_one({"id": patrol_id}, {"$set": update_dict})
@@ -2627,12 +2629,12 @@ async def update_patrol_schedule(patrol_id: str, update: PatrolScheduleUpdate):
     return schedule
 
 @api_router.delete("/patrols/{patrol_id}")
-async def delete_patrol_schedule(patrol_id: str):
+async def delete_patrol_schedule(patrol_id: str, user: dict = Depends(require_role(["admin"]))):
     await db.patrol_schedules.delete_one({"id": patrol_id})
     return {"message": "Patrol deleted"}
 
 @api_router.post("/patrols/{patrol_id}/complete")
-async def complete_patrol(patrol_id: str):
+async def complete_patrol(patrol_id: str, user: dict = Depends(require_role(["admin", "field_operator"]))):
     patrol = await db.patrol_schedules.find_one({"id": patrol_id}, {"_id": 0})
     if not patrol:
         raise HTTPException(status_code=404, detail="Patrol not found")
@@ -2658,7 +2660,7 @@ async def complete_patrol(patrol_id: str):
     return response
 
 @api_router.get("/patrols/reports")
-async def get_patrol_reports():
+async def get_patrol_reports(user: dict = Depends(get_current_user)):
     reports = await db.patrol_reports.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
     return reports
 
