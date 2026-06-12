@@ -621,40 +621,7 @@ def _normalize_path_for_public_check(template: str) -> str:
 # /api/geofences POST/DELETE, /api/interventions/rules POST/DELETE,
 # /api/interventions/execute. These were spot-checked by the AST
 # direct-call detector when this snapshot was taken.
-W2_UNGATED_BACKLOG: frozenset = frozenset({
-    # AI / analytics
-    ("GET", "/api/ai/history"),
-    ("POST", "/api/ai/analyze"),
-    # Comments — read-only side; POST is already gated
-    ("GET", "/api/comments/{entity_type}/{entity_id}"),
-    # Forecasts
-    ("GET", "/api/forecasts"),
-    ("GET", "/api/forecasts/{zone_id}"),
-    ("POST", "/api/forecasts/counterfactual/{zone_id}"),
-    ("POST", "/api/forecasts/generate/{zone_id}"),
-    # Geofences — only the read & check sides; mutations are already gated
-    ("GET", "/api/geofences"),
-    ("POST", "/api/geofences/check"),
-    # Interventions — only the read & check sides; mutations are already gated
-    ("GET", "/api/interventions"),
-    ("GET", "/api/interventions/actions"),
-    ("GET", "/api/interventions/rules"),
-    ("POST", "/api/interventions/check"),
-    ("GET", "/api/interventions/{intervention_id}"),
-    # Missions — only the read side; mutations are already gated
-    ("GET", "/api/missions"),
-    ("GET", "/api/missions/{mission_id}"),
-    # Patrols
-    ("GET", "/api/patrols"),
-    ("GET", "/api/patrols/reports"),
-    ("PUT", "/api/patrols/{patrol_id}"),
-    ("DELETE", "/api/patrols/{patrol_id}"),
-    ("POST", "/api/patrols/generate"),
-    ("POST", "/api/patrols/{patrol_id}/complete"),
-    # Weather
-    ("GET", "/api/weather"),
-    ("GET", "/api/weather/{zone_id}"),
-})
+W2_UNGATED_BACKLOG: frozenset = frozenset()
 
 
 def test_public_surface_is_locked():
