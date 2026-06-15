@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "fix/**", "linear/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-unit:
+    name: Backend unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest
+      - name: Run unit tests
+        run: pytest tests/test_unit.py -v
+
+  backend-integration:
+    name: Backend integration tests (live MongoDB + backend)
+    runs-on: ubuntu-latest
+    # KNOWN-FAILING (2026-06): the W2 auth-gating left test_api.py calling gated
+    # routes without authenticating, and the suite never ran in CI ("green by
+    # absence") so it went unnoticed. This job RUNS the suite so the failures are
+    # finally visible, but is NON-BLOCKING until the suite is repaired. Once it's
+    # green, remove `continue-on-error` so it gates merges.
+    continue-on-error: true
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })' --quiet"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      DB_NAME: ci_test
+      # 32+ chars, not a known-default — the server refuses to boot otherwise.
+      JWT_SECRET: ci-test-jwt-secret-at-least-32-characters-long
+      ADMIN_EMAIL: admin@ecosystem.com
+      # Must match the password test_admin_login_returns_tokens hard-codes.
+      ADMIN_PASSWORD: EcoAdmin2024!
+      # Gate OFF here so the suite exercises the handlers; the gate's
+      # secure-by-default behaviour is covered by the unit tests
+      # (test_phase_a_middleware_enabled_by_default) and the prod smoke test.
+      AUTH_GATE_PHASE_A: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest
+      - name: Start backend
+        working-directory: backend
+        run: uvicorn server:app --host 0.0.0.0 --port 8001 &
+      - name: Wait for backend to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8001/api/ >/dev/null; then echo "backend up"; exit 0; fi
+            sleep 2
+          done
+          echo "backend did not become ready in time" >&2
+          exit 1
+      - name: Run integration tests
+        env:
+          BACKEND_URL: http://localhost:8001
+        run: pytest tests/test_api.py -v
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install and build
+        working-directory: frontend
+        env:
+          # CRA treats warnings as errors when CI=true; don't fail the production
+          # build on lint warnings — that's a lint concern, not a build break.
+          CI: "false"
+          REACT_APP_BACKEND_URL: http://localhost:8001
+        run: |
+          npm ci
+          npm run build
