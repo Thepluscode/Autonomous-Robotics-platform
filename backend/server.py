@@ -3372,11 +3372,12 @@ app.add_middleware(
 # else gets a 401 with a JSON body — including the routes that today
 # don't yet declare `Depends(require_role(...))`.
 #
-# Why ship this *dark* (default-off)? The W1 council ruled that flipping
-# the flag is a separate W2 deploy: this commit ships the mechanism so
-# reviewers can audit the data structure, the test coverage, and the
-# rollback plan in advance. The flag flip in W2 is a one-line config
-# change that is fully reversible by setting it back to "0" / unset.
+# W2 (graduated 2026-06): the gate is now ENABLED BY DEFAULT
+# (secure-by-default, Rule 10). Every non-public path requires a valid
+# access JWT. To disable it (e.g. local debugging) set
+# `AUTH_GATE_PHASE_A=0` (or false/no/off) — fully reversible. It shipped
+# dark in W1 so reviewers could audit the data structure, test coverage,
+# and rollback plan before this flip.
 #
 # WebSocket upgrades are NOT routed through HTTP middleware; the
 # `/ws/updates` endpoint already enforces auth itself (and that path is
@@ -3393,7 +3394,8 @@ async def auth_gate_phase_a(request: Request, call_next):
     # Read flag every request, not at module load — lets tests toggle it
     # without process restart. The cost is a single dict lookup per
     # request; negligible vs. the route work that follows.
-    if os.environ.get("AUTH_GATE_PHASE_A", "").lower() not in {"1", "true", "yes"}:
+    # Secure-by-default: ON unless explicitly disabled with a falsy value.
+    if os.environ.get("AUTH_GATE_PHASE_A", "1").strip().lower() in {"0", "false", "no", "off"}:
         return await call_next(request)
 
     # CORS preflights have no body and no auth headers; let the CORS

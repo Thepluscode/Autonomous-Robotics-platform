@@ -462,10 +462,18 @@ def gated_test_route():
 
 
 def test_phase_a_middleware_disabled_passes_through(gated_test_route, monkeypatch):
+    monkeypatch.setenv("AUTH_GATE_PHASE_A", "0")
+    res = gated_test_route.get("/__phase_a_test__/protected")
+    assert res.status_code == 200, "with the gate explicitly disabled (=0), anonymous requests pass through"
+    assert res.json() == {"ok": True}
+
+
+def test_phase_a_middleware_enabled_by_default(gated_test_route, monkeypatch):
+    # W2: the gate is secure-by-default — an unset flag means ON.
     monkeypatch.delenv("AUTH_GATE_PHASE_A", raising=False)
     res = gated_test_route.get("/__phase_a_test__/protected")
-    assert res.status_code == 200, "with the gate off, anonymous requests must pass through"
-    assert res.json() == {"ok": True}
+    assert res.status_code == 401, "the auth gate must be ON by default (secure-by-default)"
+    assert res.json()["phase"] == "AUTH_GATE_PHASE_A"
 
 
 def test_phase_a_middleware_blocks_protected_route_when_enabled(gated_test_route, monkeypatch):
