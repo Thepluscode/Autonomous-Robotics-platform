@@ -26,12 +26,8 @@ jobs:
   backend-integration:
     name: Backend integration tests (live MongoDB + backend)
     runs-on: ubuntu-latest
-    # KNOWN-FAILING (2026-06): the W2 auth-gating left test_api.py calling gated
-    # routes without authenticating, and the suite never ran in CI ("green by
-    # absence") so it went unnoticed. This job RUNS the suite so the failures are
-    # finally visible, but is NON-BLOCKING until the suite is repaired. Once it's
-    # green, remove `continue-on-error` so it gates merges.
-    continue-on-error: true
+    # Boots MongoDB + the backend and runs the full integration suite against it.
+    # This is the coverage that was missing ("green by absence") — it now gates PRs.
     services:
       mongo:
         image: mongo:7
@@ -64,13 +60,19 @@ jobs:
       - name: Start backend
         working-directory: backend
         run: uvicorn server:app --host 0.0.0.0 --port 8001 &
-      - name: Wait for backend to be ready
+      - name: Wait for backend + admin seed
         run: |
+          # Poll until an admin login succeeds — this confirms the backend is up
+          # AND the admin user is seeded, so the integration suite can't pass by
+          # skipping (the api fixture skips if admin login fails).
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8001/api/ >/dev/null; then echo "backend up"; exit 0; fi
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8001/api/auth/login \
+              -H 'content-type: application/json' \
+              -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")
+            if [ "$code" = "200" ]; then echo "backend + admin ready"; exit 0; fi
             sleep 2
           done
-          echo "backend did not become ready in time" >&2
+          echo "backend/admin not ready in time" >&2
           exit 1
       - name: Run integration tests
         env:
