@@ -377,13 +377,31 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        # Iterate a snapshot so a concurrent disconnect can't mutate the list
+        # mid-iteration, and prune any socket that fails — dead connections must
+        # not accumulate silently (Rule 8: no silent failures).
+        dead: List[WebSocket] = []
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning("WebSocket broadcast failed; dropping connection: %s", exc)
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
+
+
+def _supervise_task(task: "asyncio.Task", name: str) -> None:
+    """Done-callback for fire-and-forget background tasks: log at CRITICAL if one
+    dies unexpectedly, so a dead heartbeat / provenance loop is never silent."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logging.critical("background task %r exited unexpectedly: %s", name, exc, exc_info=exc)
 
 # ==================== ENTITY/REQUEST/RESPONSE MODELS — moved to models.py ====================
 
@@ -529,37 +547,60 @@ async def refresh_token(request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @api_router.post("/auth/forgot-password")
-async def forgot_password(data: ForgotPassword):
-    user = await db.users.find_one({"email": data.email.lower()})
-    if not user:
-        return {"message": "If email exists, reset link sent"}
-    
-    token = secrets.token_urlsafe(32)
-    await db.password_reset_tokens.insert_one({
-        "user_id": str(user["_id"]),
-        "token": token,
-        "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "used": False
-    })
-    
-    logging.info(f"Password reset token for {data.email}: {token}")
-    return {"message": "If email exists, reset link sent", "token": token}
+async def forgot_password(data: ForgotPassword, request: Request):
+    email = data.email.lower()
+    ip = request.client.host if request.client else "unknown"
+    identifier = f"pwreset:{ip}:{email}"
+
+    # Rate-limit (reuse the login lockout collection): 5 requests / 15 min.
+    attempts = await db.login_attempts.find_one({"identifier": identifier})
+    if attempts and attempts.get("count", 0) >= 5:
+        lockout_until = attempts.get("lockout_until")
+        if lockout_until and datetime.now(timezone.utc) < lockout_until:
+            raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+    await db.login_attempts.update_one(
+        {"identifier": identifier},
+        {"$inc": {"count": 1}, "$set": {"lockout_until": datetime.now(timezone.utc) + timedelta(minutes=15)}},
+        upsert=True,
+    )
+
+    user = await db.users.find_one({"email": email})
+    if user:
+        token = secrets.token_urlsafe(32)
+        # Store only the HASH — a DB leak must not yield usable reset tokens.
+        await db.password_reset_tokens.insert_one({
+            "user_id": str(user["_id"]),
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "used": False,
+        })
+        # Deliver out-of-band (email — TODO: wire SendGrid). The raw token is
+        # NEVER logged at INFO or returned in the body (account-takeover primitive).
+        # DEV_MODE surfaces it at DEBUG only, for local testing without email.
+        if os.getenv("DEV_MODE") == "1":
+            logging.debug("DEV_MODE password reset token for %s: %s", email, token)
+    # Same response + same work regardless of whether the user exists → no enumeration.
+    return {"message": "If that email exists, a reset link has been sent"}
 
 @api_router.post("/auth/reset-password")
 async def reset_password(data: PasswordReset):
-    token_doc = await db.password_reset_tokens.find_one({"token": data.token, "used": False})
+    token_hash = hashlib.sha256(data.token.encode()).hexdigest()
+    token_doc = await db.password_reset_tokens.find_one({"token_hash": token_hash, "used": False})
     if not token_doc:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
-    
-    if datetime.now(timezone.utc) > token_doc["expires_at"]:
+
+    expires_at = token_doc["expires_at"]
+    if expires_at.tzinfo is None:  # tolerate naive datetimes from older/seeded docs
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires_at:
         raise HTTPException(status_code=400, detail="Token expired")
-    
+
     await db.users.update_one(
         {"_id": ObjectId(token_doc["user_id"])},
         {"$set": {"password_hash": hash_password(data.new_password)}}
     )
-    await db.password_reset_tokens.update_one({"token": data.token}, {"$set": {"used": True}})
-    
+    await db.password_reset_tokens.update_one({"token_hash": token_hash}, {"$set": {"used": True}})
+
     return {"message": "Password reset successfully"}
 
 @api_router.get("/auth/users")
@@ -3417,6 +3458,9 @@ async def _ensure_mongo_init():
         try:
             await db.users.create_index("email", unique=True)
             await db.login_attempts.create_index("identifier")
+            # Reset tokens auto-expire at expires_at (TTL) so stale tokens never linger.
+            await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+            await db.password_reset_tokens.create_index("token_hash")
             existing = await db.users.find_one({"email": ADMIN_EMAIL})
             if not existing:
                 await db.users.insert_one({
@@ -3498,14 +3542,16 @@ async def startup_events():
 
     # Start drone simulation (loop lives in simulator.py and is itself
     # supervised — each tick is wrapped in try/except + backoff).
-    asyncio.create_task(run_drone_simulation_loop(db, manager))
+    _drone_task = asyncio.create_task(run_drone_simulation_loop(db, manager))
+    _drone_task.add_done_callback(lambda t: _supervise_task(t, "drone_simulation"))
 
     # Start satellite cross-witness loop. No-op when SATELLITE_WITNESS_ENABLED
     # is unset (default for local dev / test). When enabled it polls
     # Element84's earth-search STAC API for the most recent Sentinel-2
     # scene covering each zone's bbox and records a signed observation
     # of the scene id + thumbnail SHA-256.
-    asyncio.create_task(run_satellite_witness_loop(db))
+    _satellite_task = asyncio.create_task(run_satellite_witness_loop(db))
+    _satellite_task.add_done_callback(lambda t: _supervise_task(t, "satellite_witness"))
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

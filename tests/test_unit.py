@@ -857,3 +857,31 @@ def test_mcp_generate_mission_reuses_rest_planner():
         "MCP generate_mission must construct Mission(...) — do not bypass "
         "the response model the dashboard reads from /missions."
     )
+
+
+def test_broadcast_drops_failed_connections():
+    """ConnectionManager.broadcast prunes a socket whose send fails, instead of
+    swallowing the error and leaking dead connections (Rule 8: no silent failures)."""
+    import asyncio
+    from server import ConnectionManager
+
+    class _OKWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, message):
+            self.sent.append(message)
+
+    class _BadWS:
+        async def send_json(self, message):
+            raise RuntimeError("socket closed")
+
+    cm = ConnectionManager()
+    ok, bad = _OKWS(), _BadWS()
+    cm.active_connections = [ok, bad]
+
+    asyncio.run(cm.broadcast({"type": "ping"}))
+
+    assert ok.sent == [{"type": "ping"}]       # healthy socket received the message
+    assert bad not in cm.active_connections    # failed socket was pruned
+    assert ok in cm.active_connections         # healthy socket retained
