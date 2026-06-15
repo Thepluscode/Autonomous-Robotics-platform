@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from http.cookiejar import DefaultCookiePolicy
 
 import pytest
 import requests
@@ -50,6 +51,29 @@ def _require_live_backend(base_url: str) -> None:
 
 @pytest.fixture(scope="session")
 def api(base_url: str, _require_live_backend) -> "ApiClient":
+    """Admin-authenticated client shared across the suite.
+
+    The routes are auth-gated (W2). ``get_current_user`` is COOKIE-FIRST, so a
+    stale ``Set-Cookie`` from a later login/register on this shared session would
+    silently override an explicit Authorization header (cookie-first wins). We
+    therefore BLOCK cookie storage and authenticate via a default admin Bearer
+    header, which then always governs. Tests that assert the UNAUTHENTICATED path
+    use ``anon_api`` instead.
+    """
+    client = ApiClient(base_url)
+    client.session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+    email = os.environ.get("ADMIN_EMAIL", "admin@ecosystem.com")
+    password = os.environ.get("ADMIN_PASSWORD", "EcoAdmin2024!")
+    res = client.post("/auth/login", json={"email": email, "password": password})
+    if res.status_code != 200:
+        pytest.skip(f"Admin login failed ({res.status_code}): {res.text[:200]}")
+    client.session.headers["Authorization"] = f"Bearer {res.json()['access_token']}"
+    return client
+
+
+@pytest.fixture(scope="session")
+def anon_api(base_url: str, _require_live_backend) -> "ApiClient":
+    """Unauthenticated client — for tests that assert authentication is required."""
     return ApiClient(base_url)
 
 

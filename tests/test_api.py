@@ -30,8 +30,8 @@ def test_seed_populates_data(api, auth_headers):
     assert body.get("robots", 0) > 0
 
 
-def test_seed_rejects_unauthenticated(api):
-    r = api.post("/seed")
+def test_seed_rejects_unauthenticated(anon_api):
+    r = anon_api.post("/seed")
     assert r.status_code == 401
 
 
