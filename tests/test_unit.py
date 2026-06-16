@@ -947,3 +947,44 @@ def test_reset_password_claims_token_atomically():
     assert "find_one" not in calls or calls.count("find_one_and_update") >= 1, (
         "do not read the token with a non-atomic find_one before claiming it."
     )
+
+
+# --------------------------- cooking-device dMRV adapter -----------------------
+#
+# The Gold Standard "Metered & Measured Energy Cooking Devices" dMRV adapter
+# signs meter readings into the same observation chain as drone/sensor/satellite.
+# These pin (a) that a cooking reading is signed + offline-verifiable and tamper
+# is caught, and (b) that the ingest route exists and is gated (a write must not
+# be public).
+
+def test_metered_cooking_device_observation_signs_and_verifies():
+    obs = {
+        "observed_at": "2026-06-16T00:00:00+00:00",
+        "source_type": "metered_cooking_device",
+        "source_id": "stove-001",
+        "zone_id": "cohort-A",
+        "payload": {
+            "device_id": "stove-001",
+            "interval_start": "2026-06-15T00:00:00+00:00",
+            "interval_end": "2026-06-16T00:00:00+00:00",
+            "useful_energy_mj": 12.5,
+            "cooking_sessions": 3,
+        },
+    }
+    signed = server.sign_observation(obs)
+    ok, reason = server.verify_observation(signed)
+    assert ok and reason == "ok", f"cooking reading must verify, got {reason}"
+    # Tampering the credited monitoring parameter must break the signature.
+    tampered = {**signed, "payload": {**signed["payload"], "useful_energy_mj": 999.0}}
+    ok2, reason2 = server.verify_observation(tampered)
+    assert not ok2 and reason2 == "digest_mismatch"
+
+
+def test_cooking_reading_route_registered_and_gated():
+    paths = {getattr(r, "path", None) for r in server.app.routes}
+    assert "/api/cooking-devices/readings" in paths, (
+        "cooking-device ingest route must be registered"
+    )
+    assert not server.is_public_path("/api/cooking-devices/readings"), (
+        "cooking ingest is a write — must be gated (require_role), never public"
+    )

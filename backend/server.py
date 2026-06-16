@@ -78,6 +78,7 @@ from models import (
     Alert,
     AlertCreate,
     Comment,
+    CookingDeviceReading,
     DashboardStats,
     DeployMissionRequest,
     Drone,
@@ -3213,6 +3214,56 @@ async def list_observations(
     cap = max(1, min(int(limit or 200), 1000))
     rows = await db.observations.find(query, {"_id": 0}).sort("observed_at", -1).limit(cap).to_list(cap)
     return [_redact_for_public(o) for o in rows]
+
+
+@api_router.post("/cooking-devices/readings", status_code=201)
+async def ingest_cooking_reading(
+    reading: CookingDeviceReading,
+    user: dict = Depends(require_role(["admin", "field_operator"])),
+):
+    """Ingest a metered energy-cooking-device reading and sign it into the
+    observation chain as ``source_type="metered_cooking_device"``.
+
+    This is the dMRV monitoring-parameter capture for the Gold Standard
+    "Metered & Measured Energy Cooking Devices" methodology: the metered
+    useful-energy reading becomes a signed, tamper-evident observation that
+    is independently verifiable offline against the published key — exactly
+    like the drone/sensor/satellite observation types. Quantification and
+    crediting are unchanged; this layer attests the provenance and integrity
+    of the input only.
+    """
+    try:
+        signed = await _record_observation(
+            db,
+            source_type="metered_cooking_device",
+            source_id=reading.device_id,
+            zone_id=reading.zone_id,
+            observed_at=reading.observed_at,
+            payload={
+                "device_id": reading.device_id,
+                "interval_start": reading.interval_start,
+                "interval_end": reading.interval_end,
+                "useful_energy_mj": reading.useful_energy_mj,
+                "cooking_sessions": reading.cooking_sessions,
+                "fuel_mass_kg": reading.fuel_mass_kg,
+                "project_id": reading.project_id,
+                "meter": reading.meter,
+            },
+        )
+    except Exception:
+        logging.error("ingest_cooking_reading failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="could not record cooking device reading")
+    return {
+        "success": True,
+        "data": {
+            "id": signed["id"],
+            "digest": signed["digest"],
+            "key_id": signed["key_id"],
+            "source_type": signed["source_type"],
+            "observed_at": signed["observed_at"],
+        },
+        "error": None,
+    }
 
 
 @api_router.get("/observations/{observation_id}")

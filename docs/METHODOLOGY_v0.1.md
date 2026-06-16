@@ -37,6 +37,7 @@ Current types (verifiable in code at `backend/server.py` and `backend/provenance
 | `intervention_action` | The action itself (kind, parameters, executing robot) | Operator-side record |
 | `intervention_after` | State snapshot of zone Z immediately after action A | Independent witness of post-state |
 | `satellite_image_hash` | Sentinel-2 L2A scene reference: scene id, acquisition timestamp, cloud cover, thumbnail SHA-256, canonical Element84 STAC URL | **Cross-witness from a source the platform operator does not control.** Fetched from Element84's earth-search STAC API, signed with the same Ed25519 key as every other observation. |
+| `metered_cooking_device` | A metered reading from an energy cooking device (useful energy MJ over a metering interval, cooking sessions, fuel mass) — captured for the Gold Standard *Metered & Measured Energy Cooking Devices* dMRV pilot | Device meter reports its own usage; signed at capture so the credited monitoring parameter is tamper-evident and independently verifiable. Ingested via `POST /api/cooking-devices/readings` (gated). |
 
 The intervention triple (`before` / `action` / `after`) is the load-bearing primitive for *intervention* claims: any restoration intervention is reducible to one of these triples plus the signed sensor stream that brackets it. `satellite_image_hash` is the load-bearing primitive for *cross-witness* — auditors verify the platform's claims against a public satellite record that we cannot rewrite.
 
