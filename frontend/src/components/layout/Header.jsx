@@ -3,6 +3,7 @@ import { Bell, Check } from "lucide-react";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { alertAPI } from "../../lib/api";
+import { toast } from "../../lib/toast";
 import useWebSocket from "../../hooks/useWebSocket";
 import { LoadingState, EmptyState, ErrorState } from "../state";
 
@@ -82,13 +83,34 @@ export default function Header({ title }) {
     };
   }, [open]);
 
+  // Mark one alert read: optimistic remove + decrement, roll back on failure.
+  const markOne = async (id) => {
+    const prevAlerts = alerts;
+    const prevCount = unreadCount;
+    setAlerts((list) => list.filter((a) => a.id !== id));
+    setUnreadCount((c) => Math.max(0, c - 1));
+    try {
+      await alertAPI.markRead(id);
+    } catch {
+      setAlerts(prevAlerts);
+      setUnreadCount(prevCount);
+      toast.error("Couldn't mark notification read", { description: "Please try again." });
+    }
+  };
+
+  // Mark everything read. Surface failures instead of swallowing them.
   const markAll = async () => {
+    const prevAlerts = alerts;
+    const prevCount = unreadCount;
+    setAlerts([]);
+    setUnreadCount(0);
     try {
       await alertAPI.markAllRead();
-      setAlerts([]);
-      setUnreadCount(0);
+      toast.success("All notifications marked read");
     } catch {
-      setError(true);
+      setAlerts(prevAlerts);
+      setUnreadCount(prevCount);
+      toast.error("Couldn't mark all as read", { description: "Please try again." });
     }
   };
 
@@ -157,10 +179,13 @@ export default function Header({ title }) {
                   <EmptyState icon={Bell} title="No new notifications" description="You're all caught up." className="py-8" data-testid="alerts-empty" />
                 ) : (
                   alerts.map((a) => (
-                    <div
+                    <button
+                      type="button"
                       key={a.id}
-                      className="flex gap-2.5 px-4 py-3 border-b border-border last:border-0"
+                      onClick={() => markOne(a.id)}
+                      className="w-full text-left flex gap-2.5 px-4 py-3 border-b border-border last:border-0 hover:bg-muted/50 transition-colors duration-200"
                       data-testid="alert-item"
+                      title="Mark as read"
                     >
                       <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${severityDot(a.severity)}`} aria-hidden="true" />
                       <div className="min-w-0">
@@ -168,7 +193,7 @@ export default function Header({ title }) {
                         {a.message && <p className="text-xs text-muted-foreground mt-0.5">{a.message}</p>}
                         {a.created_at && <p className="text-[10px] text-muted-foreground mt-1">{formatWhen(a.created_at)}</p>}
                       </div>
-                    </div>
+                    </button>
                   ))
                 )}
               </div>
