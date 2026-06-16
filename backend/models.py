@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 class UserRegister(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=12)
     name: str
     role: str = "viewer"
 
@@ -41,7 +41,7 @@ class UserResponse(BaseModel):
 
 class PasswordReset(BaseModel):
     token: str
-    new_password: str
+    new_password: str = Field(..., min_length=12)
 
 
 class ForgotPassword(BaseModel):

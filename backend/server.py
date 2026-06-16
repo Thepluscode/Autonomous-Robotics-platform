@@ -377,13 +377,31 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        # Iterate a snapshot so a concurrent disconnect can't mutate the list
+        # mid-iteration, and prune any socket that fails — dead connections must
+        # not accumulate silently (Rule 8: no silent failures).
+        dead: List[WebSocket] = []
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning("WebSocket broadcast failed; dropping connection: %s", exc)
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
+
+
+def _supervise_task(task: "asyncio.Task", name: str) -> None:
+    """Done-callback for fire-and-forget background tasks: log at CRITICAL if one
+    dies unexpectedly, so a dead heartbeat / provenance loop is never silent."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logging.critical("background task %r exited unexpectedly: %s", name, exc, exc_info=exc)
 
 # ==================== ENTITY/REQUEST/RESPONSE MODELS — moved to models.py ====================
 
@@ -454,6 +472,8 @@ async def login(credentials: UserLogin, request: Request, response: Response):
     attempts = await db.login_attempts.find_one({"identifier": identifier})
     if attempts and attempts.get("count", 0) >= 5:
         lockout_until = attempts.get("lockout_until")
+        if lockout_until and lockout_until.tzinfo is None:  # tolerate naive legacy/seeded docs
+            lockout_until = lockout_until.replace(tzinfo=timezone.utc)
         if lockout_until and datetime.now(timezone.utc) < lockout_until:
             raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
     
@@ -529,37 +549,70 @@ async def refresh_token(request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @api_router.post("/auth/forgot-password")
-async def forgot_password(data: ForgotPassword):
-    user = await db.users.find_one({"email": data.email.lower()})
-    if not user:
-        return {"message": "If email exists, reset link sent"}
-    
-    token = secrets.token_urlsafe(32)
-    await db.password_reset_tokens.insert_one({
-        "user_id": str(user["_id"]),
-        "token": token,
-        "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
-        "used": False
-    })
-    
-    logging.info(f"Password reset token for {data.email}: {token}")
-    return {"message": "If email exists, reset link sent", "token": token}
+async def forgot_password(data: ForgotPassword, request: Request):
+    email = data.email.lower()
+    ip = request.client.host if request.client else "unknown"
+    identifier = f"pwreset:{ip}:{email}"
+
+    # Rate-limit (reuse the login lockout collection): 5 requests / 15 min.
+    attempts = await db.login_attempts.find_one({"identifier": identifier})
+    if attempts and attempts.get("count", 0) >= 5:
+        lockout_until = attempts.get("lockout_until")
+        if lockout_until and lockout_until.tzinfo is None:  # tolerate naive legacy/seeded docs
+            lockout_until = lockout_until.replace(tzinfo=timezone.utc)
+        if lockout_until and datetime.now(timezone.utc) < lockout_until:
+            raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+    await db.login_attempts.update_one(
+        {"identifier": identifier},
+        {"$inc": {"count": 1}, "$set": {"lockout_until": datetime.now(timezone.utc) + timedelta(minutes=15)}},
+        upsert=True,
+    )
+
+    user = await db.users.find_one({"email": email})
+    if user:
+        token = secrets.token_urlsafe(32)
+        # Store only the HASH — a DB leak must not yield usable reset tokens.
+        await db.password_reset_tokens.insert_one({
+            "user_id": str(user["_id"]),
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "used": False,
+        })
+        # Deliver out-of-band (email — TODO: wire SendGrid). The raw token is
+        # NEVER logged at INFO or returned in the body (account-takeover primitive).
+        # DEV_MODE surfaces it at DEBUG only, for local testing without email.
+        if os.getenv("DEV_MODE") == "1":
+            logging.debug("DEV_MODE password reset token for %s: %s", email, token)
+    # Same response + same work regardless of whether the user exists → no enumeration.
+    return {"message": "If that email exists, a reset link has been sent"}
 
 @api_router.post("/auth/reset-password")
 async def reset_password(data: PasswordReset):
-    token_doc = await db.password_reset_tokens.find_one({"token": data.token, "used": False})
+    token_hash = hashlib.sha256(data.token.encode()).hexdigest()
+    # Atomically claim the token: flip used False→True in the same op that
+    # reads it. Two concurrent requests with the same token can no longer
+    # both pass a find-then-update check (TOCTOU) — exactly one wins the
+    # claim and the loser sees used!=False, i.e. "already used".
+    token_doc = await db.password_reset_tokens.find_one_and_update(
+        {"token_hash": token_hash, "used": False},
+        {"$set": {"used": True}},
+    )
     if not token_doc:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
-    
-    if datetime.now(timezone.utc) > token_doc["expires_at"]:
+
+    expires_at = token_doc["expires_at"]
+    if expires_at.tzinfo is None:  # tolerate naive datetimes from older/seeded docs
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires_at:
+        # Token was claimed above and is now spent — correct, it was expired
+        # anyway, and burning it prevents replay of a stale-but-unexpired race.
         raise HTTPException(status_code=400, detail="Token expired")
-    
+
     await db.users.update_one(
         {"_id": ObjectId(token_doc["user_id"])},
         {"$set": {"password_hash": hash_password(data.new_password)}}
     )
-    await db.password_reset_tokens.update_one({"token": data.token}, {"$set": {"used": True}})
-    
+
     return {"message": "Password reset successfully"}
 
 @api_router.get("/auth/users")
@@ -3331,11 +3384,12 @@ app.add_middleware(
 # else gets a 401 with a JSON body — including the routes that today
 # don't yet declare `Depends(require_role(...))`.
 #
-# Why ship this *dark* (default-off)? The W1 council ruled that flipping
-# the flag is a separate W2 deploy: this commit ships the mechanism so
-# reviewers can audit the data structure, the test coverage, and the
-# rollback plan in advance. The flag flip in W2 is a one-line config
-# change that is fully reversible by setting it back to "0" / unset.
+# W2 (graduated 2026-06): the gate is now ENABLED BY DEFAULT
+# (secure-by-default, Rule 10). Every non-public path requires a valid
+# access JWT. To disable it (e.g. local debugging) set
+# `AUTH_GATE_PHASE_A=0` (or false/no/off) — fully reversible. It shipped
+# dark in W1 so reviewers could audit the data structure, test coverage,
+# and rollback plan before this flip.
 #
 # WebSocket upgrades are NOT routed through HTTP middleware; the
 # `/ws/updates` endpoint already enforces auth itself (and that path is
@@ -3352,7 +3406,8 @@ async def auth_gate_phase_a(request: Request, call_next):
     # Read flag every request, not at module load — lets tests toggle it
     # without process restart. The cost is a single dict lookup per
     # request; negligible vs. the route work that follows.
-    if os.environ.get("AUTH_GATE_PHASE_A", "").lower() not in {"1", "true", "yes"}:
+    # Secure-by-default: ON unless explicitly disabled with a falsy value.
+    if os.environ.get("AUTH_GATE_PHASE_A", "1").strip().lower() in {"0", "false", "no", "off"}:
         return await call_next(request)
 
     # CORS preflights have no body and no auth headers; let the CORS
@@ -3401,6 +3456,16 @@ async def auth_gate_phase_a(request: Request, call_next):
             status_code=401,
             content={"detail": "Invalid token", "phase": "AUTH_GATE_PHASE_A"},
         )
+    except jwt.PyJWTError:
+        # Catch-all for any other PyJWT error (e.g. InvalidKeyError, which is a
+        # sibling of InvalidTokenError, not a subclass). Fail CLOSED, never open,
+        # and log it — a key-level error here means a config problem, not a
+        # client problem, and must be observable.
+        logging.error("auth_gate: unexpected JWT error; failing closed", exc_info=True)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token", "phase": "AUTH_GATE_PHASE_A"},
+        )
 
     return await call_next(request)
 
@@ -3417,6 +3482,9 @@ async def _ensure_mongo_init():
         try:
             await db.users.create_index("email", unique=True)
             await db.login_attempts.create_index("identifier")
+            # Reset tokens auto-expire at expires_at (TTL) so stale tokens never linger.
+            await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+            await db.password_reset_tokens.create_index("token_hash", unique=True)
             existing = await db.users.find_one({"email": ADMIN_EMAIL})
             if not existing:
                 await db.users.insert_one({
@@ -3460,7 +3528,8 @@ async def _ensure_mongo_init():
 @app.on_event("startup")
 async def startup_events():
     # Defer Mongo init — won't block startup, won't crash the app.
-    asyncio.create_task(_ensure_mongo_init())
+    _mongo_init_task = asyncio.create_task(_ensure_mongo_init())
+    _mongo_init_task.add_done_callback(lambda t: _supervise_task(t, "mongo_init"))
 
     # DEV_MODE-gated credentials file write — pure filesystem, no Mongo.
     # The file contains the admin password in plaintext, so it must
@@ -3492,20 +3561,23 @@ async def startup_events():
     # sub-app on FastAPI doesn't run that sub-app's lifespan.
     try:
         from mcp_server import run_mcp_session_lifespan as _run_mcp_lifespan
-        asyncio.create_task(_run_mcp_lifespan())
+        _mcp_task = asyncio.create_task(_run_mcp_lifespan())
+        _mcp_task.add_done_callback(lambda t: _supervise_task(t, "mcp_session_lifespan"))
     except Exception as exc:
         logging.warning("MCP session lifespan not started: %s", exc)
 
     # Start drone simulation (loop lives in simulator.py and is itself
     # supervised — each tick is wrapped in try/except + backoff).
-    asyncio.create_task(run_drone_simulation_loop(db, manager))
+    _drone_task = asyncio.create_task(run_drone_simulation_loop(db, manager))
+    _drone_task.add_done_callback(lambda t: _supervise_task(t, "drone_simulation"))
 
     # Start satellite cross-witness loop. No-op when SATELLITE_WITNESS_ENABLED
     # is unset (default for local dev / test). When enabled it polls
     # Element84's earth-search STAC API for the most recent Sentinel-2
     # scene covering each zone's bbox and records a signed observation
     # of the scene id + thumbnail SHA-256.
-    asyncio.create_task(run_satellite_witness_loop(db))
+    _satellite_task = asyncio.create_task(run_satellite_witness_loop(db))
+    _satellite_task.add_done_callback(lambda t: _supervise_task(t, "satellite_witness"))
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

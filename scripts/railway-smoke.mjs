@@ -44,6 +44,15 @@ async function checkHtml(url, label) {
   return response.text();
 }
 
+async function checkUnauthorized(url, label) {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (response.status !== 401) {
+    throw new Error(
+      `${label} returned ${response.status}, expected 401 — the auth gate (AUTH_GATE_PHASE_A) must be ON in production`,
+    );
+  }
+}
+
 async function main() {
   const frontend = normalizeUrl(readArg("frontend", process.env.FRONTEND_URL), "frontend");
   const backend = normalizeUrl(readArg("backend", process.env.BACKEND_URL || process.env.REACT_APP_BACKEND_URL), "backend");
@@ -53,6 +62,8 @@ async function main() {
     ["frontend /login", () => checkHtml(`${frontend}/login`, "frontend /login")],
     ["backend /api", () => checkJson(`${backend}/api/`, "backend /api")],
     ["backend /api/public/dashboard", () => checkJson(`${backend}/api/public/dashboard`, "backend /api/public/dashboard")],
+    // Auth gate must be ON: a protected route with no token must 401.
+    ["backend auth gate (protected route 401s)", () => checkUnauthorized(`${backend}/api/drones`, "backend /api/drones")],
   ];
 
   for (const [label, run] of checks) {

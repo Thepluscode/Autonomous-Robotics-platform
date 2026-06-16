@@ -462,10 +462,18 @@ def gated_test_route():
 
 
 def test_phase_a_middleware_disabled_passes_through(gated_test_route, monkeypatch):
+    monkeypatch.setenv("AUTH_GATE_PHASE_A", "0")
+    res = gated_test_route.get("/__phase_a_test__/protected")
+    assert res.status_code == 200, "with the gate explicitly disabled (=0), anonymous requests pass through"
+    assert res.json() == {"ok": True}
+
+
+def test_phase_a_middleware_enabled_by_default(gated_test_route, monkeypatch):
+    # W2: the gate is secure-by-default — an unset flag means ON.
     monkeypatch.delenv("AUTH_GATE_PHASE_A", raising=False)
     res = gated_test_route.get("/__phase_a_test__/protected")
-    assert res.status_code == 200, "with the gate off, anonymous requests must pass through"
-    assert res.json() == {"ok": True}
+    assert res.status_code == 401, "the auth gate must be ON by default (secure-by-default)"
+    assert res.json()["phase"] == "AUTH_GATE_PHASE_A"
 
 
 def test_phase_a_middleware_blocks_protected_route_when_enabled(gated_test_route, monkeypatch):
@@ -856,4 +864,86 @@ def test_mcp_generate_mission_reuses_rest_planner():
     assert "Mission" in call_targets, (
         "MCP generate_mission must construct Mission(...) — do not bypass "
         "the response model the dashboard reads from /missions."
+    )
+
+
+def test_broadcast_drops_failed_connections():
+    """ConnectionManager.broadcast prunes a socket whose send fails, instead of
+    swallowing the error and leaking dead connections (Rule 8: no silent failures)."""
+    import asyncio
+    from server import ConnectionManager
+
+    class _OKWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, message):
+            self.sent.append(message)
+
+    class _BadWS:
+        async def send_json(self, message):
+            raise RuntimeError("socket closed")
+
+    cm = ConnectionManager()
+    ok, bad = _OKWS(), _BadWS()
+    cm.active_connections = [ok, bad]
+
+    asyncio.run(cm.broadcast({"type": "ping"}))
+
+    assert ok.sent == [{"type": "ping"}]       # healthy socket received the message
+    assert bad not in cm.active_connections    # failed socket was pruned
+    assert ok in cm.active_connections         # healthy socket retained
+
+
+# --------------------------- password strength floor --------------------------
+#
+# Both account-creation and password-reset must enforce a minimum length so a
+# reset can't downgrade an account below the register-time floor. Doctrine hard
+# floor is 12 chars. These are pure-Pydantic (no Mongo / no server).
+
+def test_register_rejects_weak_password():
+    from pydantic import ValidationError
+    from models import UserRegister
+
+    with pytest.raises(ValidationError):
+        UserRegister(email="a@b.com", password="short", name="X")
+    # 12+ chars is accepted
+    UserRegister(email="a@b.com", password="long-enough-pw", name="X")
+
+
+def test_reset_rejects_weak_password():
+    from pydantic import ValidationError
+    from models import PasswordReset
+
+    with pytest.raises(ValidationError):
+        PasswordReset(token="t", new_password="short")
+    PasswordReset(token="t", new_password="long-enough-pw")
+
+
+# --------------------------- reset token single-use ---------------------------
+#
+# The reset-password flow can't be unit-tested end-to-end (needs Mongo + the
+# raw token, which is only delivered out-of-band). This AST guard pins the
+# atomic-claim contract: the handler MUST consume the token with a single
+# find_one_and_update (read+mark-used in one op), never a find_one followed by
+# a separate update_one — that re-introduces the TOCTOU replay window.
+
+def test_reset_password_claims_token_atomically():
+    import ast
+    import inspect
+
+    src = inspect.getsource(server.reset_password)
+    tree = ast.parse(src)
+    calls = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    assert "find_one_and_update" in calls, (
+        "reset_password must claim the token atomically via find_one_and_update "
+        "(read + mark-used in one op) — a find_one then update_one is a TOCTOU "
+        "replay window."
+    )
+    assert "find_one" not in calls or calls.count("find_one_and_update") >= 1, (
+        "do not read the token with a non-atomic find_one before claiming it."
     )

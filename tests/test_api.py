@@ -30,8 +30,8 @@ def test_seed_populates_data(api, auth_headers):
     assert body.get("robots", 0) > 0
 
 
-def test_seed_rejects_unauthenticated(api):
-    r = api.post("/seed")
+def test_seed_rejects_unauthenticated(anon_api):
+    r = anon_api.post("/seed")
     assert r.status_code == 401
 
 
@@ -53,7 +53,7 @@ def test_register_then_me(api, unique_name):
     email = f"{unique_name}@example.com"
     r = api.post(
         "/auth/register",
-        json={"email": email, "password": "Hunter2!", "name": "Test User", "role": "viewer"},
+        json={"email": email, "password": "Hunter2!Strong", "name": "Test User", "role": "viewer"},
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
@@ -70,7 +70,7 @@ def test_register_admin_role_is_downgraded(api, unique_name):
     email = f"{unique_name}-priv@example.com"
     r = api.post(
         "/auth/register",
-        json={"email": email, "password": "Hunter2!", "name": "Sneaky", "role": "admin"},
+        json={"email": email, "password": "Hunter2!Strong", "name": "Sneaky", "role": "admin"},
     )
     assert r.status_code == 200
     assert r.json()["role"] == "viewer"
@@ -558,12 +558,26 @@ def test_mission_draft_cannot_authorize(api, auth_headers, unique_name):
 def test_mission_generate_assigns_robot_assets(api, seeded, auth_headers):
     zones = api.get("/zones").json()
     assert zones, "seed should provide zones"
+    target_zone = zones[0]["id"]
+
+    # Guarantee an eligible mobile robot at the target zone. The seed scatters
+    # robots across zones at random (random.choice), so without this the planner
+    # may correctly find none assignable here — which made this test flaky.
+    placed = api.post("/robots", json={
+        "name": "pytest-mission-robot",
+        "robot_type": "ground",
+        "zone_id": target_zone,
+        "status": "idle",
+        "battery": 88,
+        "health": 91,
+    })
+    assert placed.status_code == 200, placed.text
 
     mission = api.post(
         "/missions/generate",
         headers=auth_headers,
         json={
-            "zone_id": zones[0]["id"],
+            "zone_id": target_zone,
             "mission_type": "patrol",
             "max_robots": 3,
             "max_drones": 2,

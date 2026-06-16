@@ -27,9 +27,13 @@ ADMIN_PASSWORD=<admin-password>
 FRONTEND_URL=https://<frontend-service>.up.railway.app
 COOKIE_SECURE=true
 COOKIE_SAMESITE=none
+# AUTH_GATE_PHASE_A is ON by default (secure-by-default). Leave it UNSET in prod.
+# Set to 0/false ONLY for temporary debugging — that disables the auth gate.
 ```
 
 If you use a custom frontend domain, add it to `FRONTEND_URL`. Multiple origins are comma-separated.
+
+**Auth gate:** `AUTH_GATE_PHASE_A` is **enabled by default** — every non-public route requires a valid access JWT. The public surface is the `PUBLIC_ROUTES` / `PUBLIC_ROUTE_PATTERNS` allowlist (login + refresh, `/api/public/*`, observations, attestation, `.well-known/keys.json`). Do **not** set it to `0` in production; the post-deploy smoke test asserts a protected route returns `401`.
 
 ## Smoke test
 
