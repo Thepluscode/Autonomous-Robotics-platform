@@ -602,3 +602,21 @@ class SpeciesUploadRequest(BaseModel):
     zone_id: Optional[str] = None
     image_filename: Optional[str] = None
     image_content_type: Optional[str] = None
+
+
+class CookingDeviceReading(BaseModel):
+    """A metered reading from an energy cooking device (Gold Standard dMRV:
+    'Metered & Measured Energy Cooking Devices'). Captured as a signed,
+    tamper-evident observation feeding the methodology's monitoring parameter.
+    Quantification/crediting is unchanged — this only attests the input's
+    provenance and integrity."""
+    device_id: str = Field(..., min_length=1)
+    interval_start: str  # ISO-8601 start of the metering interval
+    interval_end: str    # ISO-8601 end of the metering interval
+    useful_energy_mj: float = Field(..., ge=0)  # credited monitoring parameter
+    cooking_sessions: Optional[int] = Field(default=None, ge=0)
+    fuel_mass_kg: Optional[float] = Field(default=None, ge=0)
+    project_id: Optional[str] = None  # GS project / VPA the device belongs to
+    zone_id: Optional[str] = None     # cohort / region key in the chain
+    meter: Optional[Dict[str, str]] = None  # meter model, firmware, serial, etc.
+    observed_at: Optional[str] = None

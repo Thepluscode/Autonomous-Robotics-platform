@@ -1232,3 +1232,40 @@ def test_planner_attaches_source_hashes(api, seeded, auth_headers, unique_name):
     # auto-picked zone yet — but the field must always be present.
     assert "source_hashes" in ev and isinstance(ev["source_hashes"], list)
 
+
+def test_cooking_reading_ingests_and_signs(api, unique_name):
+    """dMRV cookstove adapter: a metered reading is signed into the chain and
+    is independently verifiable (the Gold Standard monitoring-parameter capture)."""
+    payload = {
+        "device_id": f"stove-{unique_name}",
+        "interval_start": "2026-06-15T00:00:00+00:00",
+        "interval_end": "2026-06-16T00:00:00+00:00",
+        "useful_energy_mj": 12.5,
+        "cooking_sessions": 3,
+        "project_id": "GS-TEST",
+    }
+    r = api.post("/cooking-devices/readings", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["success"] is True and body["error"] is None
+    data = body["data"]
+    assert data["source_type"] == "metered_cooking_device"
+    assert data["id"] and data["digest"] and data["key_id"]
+    # fetch it back; the chain must report it as a valid signature
+    got = api.get(f"/observations/{data['id']}")
+    assert got.status_code == 200, got.text
+    assert got.json()["verification"]["valid"] is True
+
+
+def test_cooking_reading_rejects_unauthenticated(anon_api):
+    r = anon_api.post(
+        "/cooking-devices/readings",
+        json={
+            "device_id": "x",
+            "interval_start": "2026-06-15T00:00:00+00:00",
+            "interval_end": "2026-06-16T00:00:00+00:00",
+            "useful_energy_mj": 1.0,
+        },
+    )
+    assert r.status_code == 401
+
