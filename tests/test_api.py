@@ -53,7 +53,7 @@ def test_register_then_me(api, unique_name):
     email = f"{unique_name}@example.com"
     r = api.post(
         "/auth/register",
-        json={"email": email, "password": "Hunter2!", "name": "Test User", "role": "viewer"},
+        json={"email": email, "password": "Hunter2!Strong", "name": "Test User", "role": "viewer"},
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
@@ -70,7 +70,7 @@ def test_register_admin_role_is_downgraded(api, unique_name):
     email = f"{unique_name}-priv@example.com"
     r = api.post(
         "/auth/register",
-        json={"email": email, "password": "Hunter2!", "name": "Sneaky", "role": "admin"},
+        json={"email": email, "password": "Hunter2!Strong", "name": "Sneaky", "role": "admin"},
     )
     assert r.status_code == 200
     assert r.json()["role"] == "viewer"

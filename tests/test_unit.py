@@ -893,3 +893,57 @@ def test_broadcast_drops_failed_connections():
     assert ok.sent == [{"type": "ping"}]       # healthy socket received the message
     assert bad not in cm.active_connections    # failed socket was pruned
     assert ok in cm.active_connections         # healthy socket retained
+
+
+# --------------------------- password strength floor --------------------------
+#
+# Both account-creation and password-reset must enforce a minimum length so a
+# reset can't downgrade an account below the register-time floor. Doctrine hard
+# floor is 12 chars. These are pure-Pydantic (no Mongo / no server).
+
+def test_register_rejects_weak_password():
+    from pydantic import ValidationError
+    from models import UserRegister
+
+    with pytest.raises(ValidationError):
+        UserRegister(email="a@b.com", password="short", name="X")
+    # 12+ chars is accepted
+    UserRegister(email="a@b.com", password="long-enough-pw", name="X")
+
+
+def test_reset_rejects_weak_password():
+    from pydantic import ValidationError
+    from models import PasswordReset
+
+    with pytest.raises(ValidationError):
+        PasswordReset(token="t", new_password="short")
+    PasswordReset(token="t", new_password="long-enough-pw")
+
+
+# --------------------------- reset token single-use ---------------------------
+#
+# The reset-password flow can't be unit-tested end-to-end (needs Mongo + the
+# raw token, which is only delivered out-of-band). This AST guard pins the
+# atomic-claim contract: the handler MUST consume the token with a single
+# find_one_and_update (read+mark-used in one op), never a find_one followed by
+# a separate update_one — that re-introduces the TOCTOU replay window.
+
+def test_reset_password_claims_token_atomically():
+    import ast
+    import inspect
+
+    src = inspect.getsource(server.reset_password)
+    tree = ast.parse(src)
+    calls = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    assert "find_one_and_update" in calls, (
+        "reset_password must claim the token atomically via find_one_and_update "
+        "(read + mark-used in one op) — a find_one then update_one is a TOCTOU "
+        "replay window."
+    )
+    assert "find_one" not in calls or calls.count("find_one_and_update") >= 1, (
+        "do not read the token with a non-atomic find_one before claiming it."
+    )

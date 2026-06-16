@@ -472,6 +472,8 @@ async def login(credentials: UserLogin, request: Request, response: Response):
     attempts = await db.login_attempts.find_one({"identifier": identifier})
     if attempts and attempts.get("count", 0) >= 5:
         lockout_until = attempts.get("lockout_until")
+        if lockout_until and lockout_until.tzinfo is None:  # tolerate naive legacy/seeded docs
+            lockout_until = lockout_until.replace(tzinfo=timezone.utc)
         if lockout_until and datetime.now(timezone.utc) < lockout_until:
             raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
     
@@ -556,6 +558,8 @@ async def forgot_password(data: ForgotPassword, request: Request):
     attempts = await db.login_attempts.find_one({"identifier": identifier})
     if attempts and attempts.get("count", 0) >= 5:
         lockout_until = attempts.get("lockout_until")
+        if lockout_until and lockout_until.tzinfo is None:  # tolerate naive legacy/seeded docs
+            lockout_until = lockout_until.replace(tzinfo=timezone.utc)
         if lockout_until and datetime.now(timezone.utc) < lockout_until:
             raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
     await db.login_attempts.update_one(
@@ -585,7 +589,14 @@ async def forgot_password(data: ForgotPassword, request: Request):
 @api_router.post("/auth/reset-password")
 async def reset_password(data: PasswordReset):
     token_hash = hashlib.sha256(data.token.encode()).hexdigest()
-    token_doc = await db.password_reset_tokens.find_one({"token_hash": token_hash, "used": False})
+    # Atomically claim the token: flip used False→True in the same op that
+    # reads it. Two concurrent requests with the same token can no longer
+    # both pass a find-then-update check (TOCTOU) — exactly one wins the
+    # claim and the loser sees used!=False, i.e. "already used".
+    token_doc = await db.password_reset_tokens.find_one_and_update(
+        {"token_hash": token_hash, "used": False},
+        {"$set": {"used": True}},
+    )
     if not token_doc:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
 
@@ -593,13 +604,14 @@ async def reset_password(data: PasswordReset):
     if expires_at.tzinfo is None:  # tolerate naive datetimes from older/seeded docs
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires_at:
+        # Token was claimed above and is now spent — correct, it was expired
+        # anyway, and burning it prevents replay of a stale-but-unexpired race.
         raise HTTPException(status_code=400, detail="Token expired")
 
     await db.users.update_one(
         {"_id": ObjectId(token_doc["user_id"])},
         {"$set": {"password_hash": hash_password(data.new_password)}}
     )
-    await db.password_reset_tokens.update_one({"token_hash": token_hash}, {"$set": {"used": True}})
 
     return {"message": "Password reset successfully"}
 
@@ -3444,6 +3456,16 @@ async def auth_gate_phase_a(request: Request, call_next):
             status_code=401,
             content={"detail": "Invalid token", "phase": "AUTH_GATE_PHASE_A"},
         )
+    except jwt.PyJWTError:
+        # Catch-all for any other PyJWT error (e.g. InvalidKeyError, which is a
+        # sibling of InvalidTokenError, not a subclass). Fail CLOSED, never open,
+        # and log it — a key-level error here means a config problem, not a
+        # client problem, and must be observable.
+        logging.error("auth_gate: unexpected JWT error; failing closed", exc_info=True)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token", "phase": "AUTH_GATE_PHASE_A"},
+        )
 
     return await call_next(request)
 
@@ -3462,7 +3484,7 @@ async def _ensure_mongo_init():
             await db.login_attempts.create_index("identifier")
             # Reset tokens auto-expire at expires_at (TTL) so stale tokens never linger.
             await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
-            await db.password_reset_tokens.create_index("token_hash")
+            await db.password_reset_tokens.create_index("token_hash", unique=True)
             existing = await db.users.find_one({"email": ADMIN_EMAIL})
             if not existing:
                 await db.users.insert_one({
@@ -3506,7 +3528,8 @@ async def _ensure_mongo_init():
 @app.on_event("startup")
 async def startup_events():
     # Defer Mongo init — won't block startup, won't crash the app.
-    asyncio.create_task(_ensure_mongo_init())
+    _mongo_init_task = asyncio.create_task(_ensure_mongo_init())
+    _mongo_init_task.add_done_callback(lambda t: _supervise_task(t, "mongo_init"))
 
     # DEV_MODE-gated credentials file write — pure filesystem, no Mongo.
     # The file contains the admin password in plaintext, so it must
@@ -3538,7 +3561,8 @@ async def startup_events():
     # sub-app on FastAPI doesn't run that sub-app's lifespan.
     try:
         from mcp_server import run_mcp_session_lifespan as _run_mcp_lifespan
-        asyncio.create_task(_run_mcp_lifespan())
+        _mcp_task = asyncio.create_task(_run_mcp_lifespan())
+        _mcp_task.add_done_callback(lambda t: _supervise_task(t, "mcp_session_lifespan"))
     except Exception as exc:
         logging.warning("MCP session lifespan not started: %s", exc)
 
