@@ -131,4 +131,73 @@ Send the doc URLs *in the email body*, not as attachments — reviewers will ski
 
 ---
 
-*Last updated: 2026-05-09.*
+## Live outreach log
+
+> Not a template — a factual thread record. Keep it accurate; this is the source of truth for what was actually sent and received.
+
+### Gold Standard — dMRV Pilot Programme
+
+| | |
+|---|---|
+| **Sent** | 2026-05-14 — Template A variant, subject "30-min review request — verifiable rewilding chain-of-custody" |
+| **Reply** | ~2026-05-18 — Nancy Mansell, Stakeholder Support Associate, Gold Standard (Geneva) |
+| **Reply substance** | No calls (small org). Will answer *specific written questions* about standard documents / requirements / pilot programmes — **not** project eligibility or consulting (those → ICROA-listed consultants). Real path: the **dMRV Submission Guidelines** on the **dMRV Pilot Programme** page. Methodology inquiries: `methodology@goldstandard.org`. |
+| **Analysis** | `docs/superpowers/specs/2026-05-18-gold-standard-dmrv-gap-analysis.md` (requirements, gap analysis, full question set, submission path) |
+| **Positioning decision** | Gap-analysis §6 — Option 3 (relationship/feedback posture) near-term; Option 1 (bind to a non-priority GS land-use/restoration methodology) as destination; Option 2 (carbon-methodology product pivot) rejected; Verra stays primary `/gaia-prime` hero. |
+| **Follow-up sent** | 2026-05-19 — 3 gating questions (Guidelines version/window · evidence-layer scope · methodology-binding timing) sent on Nancy's thread. |
+| **Reply (gating Qs)** | 2026-06-02 — Nancy Mansell. **Q1 (window):** pilot concludes **30-Oct-2026**; current Guidelines still apply, submission process unchanged, team actively expecting submissions; stale Q4-2025 schedule acknowledged and being raised internally; package contents not contradicted. **Q2 (evidence-layer scope):** declined to rule — "must meet the requirements; the **dMRV proposal template** may provide further insight"; GS "unable to determine eligibility" for an individual situation. **Q3 (binding timing):** definitive — **"dMRV submissions must be linked to a methodology and a project"** (bind at submission, not matched during the pilot); priority-methodology list is on the programme page. |
+| **Net effect** | Q3 closes the binding question: **no GS submission is possible without (a) a named GS methodology and (b) a concrete project/zone** — Template-B pilot-zone outreach is now a hard prerequisite of the GS path, not a parallel track. Q2 leaves evidence-layer-only scope unadjudicated → self-assess against the dMRV proposal template; GS will not pre-validate it. §6 positioning unchanged in direction (Option 3 near-term, Option 1 destination), sharpened: Option 1 now provably requires a real project, not just a methodology name. Full reconciliation: gap-analysis §7. |
+| **Next action** | (1) Obtain the **dMRV proposal template** from the programme page; map our evidence layer against it to self-judge Q2. (2) Identify one candidate GS land-use/restoration methodology + one concrete pilot zone (couples to Template-B outreach). (3) Then assemble the requirement-mapped package per gap-analysis §4. No further scope emails to GS — they have stated they will not adjudicate eligibility. |
+
+**Follow-up email — 3 gating questions (copy-paste):**
+
+**Subject:** Re: 30-min review request — three specific questions on the dMRV pilot
+
+```
+Hi Nancy,
+
+Thank you — understood on the format, written questions it is. These
+are all clarifications on the dMRV pilot standard documents (not project
+eligibility or consulting), so I hope they fit what you can answer.
+
+1. Submission Guidelines version & window. The copy we located is
+   "dMRV Submission Guidelines, Pilot v0.1", whose submission schedule
+   runs through Q4 2025, while the programme materials say the pilot
+   runs to October 2026 with rolling submissions. Could you confirm the
+   current Guidelines version and the current submission window, and
+   whether the required submission package is still: technology
+   description, evidence of verifiability, nominated methodology,
+   activity description, site information, and contact?
+
+2. Evidence-layer scope. Our system is a cryptographic
+   measurement-evidence and chain-of-custody layer: it signs raw
+   observations (sensor, drone, satellite) with a published Ed25519 key
+   so a third party can verify integrity offline, and it deliberately
+   does not itself compute quantification or impact. Does the dMRV
+   pilot accept a submission scoped purely as an MRV
+   data-integrity / independent-verifiability layer feeding an existing
+   Gold Standard methodology, or must a dMRV submission also propose the
+   quantification approach?
+
+3. Methodology binding timing. Must a dMRV solution be bound to a
+   specific named Gold Standard methodology/activity at the point of
+   submission, or can a technology be accepted into the pilot and
+   matched to a methodology during it?
+
+Happy to send our methodology and threat-model documentation if useful
+for context. Thank you for the time.
+
+Theophilus Ogieva
+[contact]
+```
+
+**Pre-send checklist:**
+- [ ] Reply on the existing Nancy Mansell thread (the channel she explicitly invited) — do not open a new one.
+- [ ] Optionally cc `methodology@goldstandard.org` only if Nancy redirects question 3; do not cc pre-emptively.
+- [ ] Replace `[contact]`.
+- [ ] Do not add a 4th question or any eligibility/consulting ask — they refuse those and it weakens the three that matter.
+- [ ] Log the response in this table when it arrives; re-run gap-analysis §2 verdicts against any concrete requirements they cite.
+
+---
+
+*Last updated: 2026-06-03.*
