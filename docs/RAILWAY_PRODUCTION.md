@@ -47,9 +47,11 @@ node scripts/railway-smoke.mjs \
 
 The script checks:
 
-- `/gaia-prime`
-- `/login`
-- `/api/`
-- `/api/public/dashboard`
+- `frontend /gaia-prime` — HTML 200
+- `frontend /login` — HTML 200
+- `backend /api/` — JSON 200
+- `backend /api/public/dashboard` — JSON 200 (deliberate public route)
+- `backend /.well-known/keys.json` — JSON 200 (auditor public-key endpoint must stay reachable)
+- `backend /api/drones` (anonymous) — **401** (auth gate is ON; failure here means the gate is disabled)
 
 Then open `/gaia-prime` in a browser and confirm the console no longer shows public-page `/api/auth/me` noise.
