@@ -62,6 +62,8 @@ async function main() {
     ["frontend /login", () => checkHtml(`${frontend}/login`, "frontend /login")],
     ["backend /api", () => checkJson(`${backend}/api/`, "backend /api")],
     ["backend /api/public/dashboard", () => checkJson(`${backend}/api/public/dashboard`, "backend /api/public/dashboard")],
+    // Auditor public surface must stay reachable after the auth gate activates.
+    ["backend /.well-known/keys.json", () => checkJson(`${backend}/.well-known/keys.json`, "backend /.well-known/keys.json")],
     // Auth gate must be ON: a protected route with no token must 401.
     ["backend auth gate (protected route 401s)", () => checkUnauthorized(`${backend}/api/drones`, "backend /api/drones")],
   ];
