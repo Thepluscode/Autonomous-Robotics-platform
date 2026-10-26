@@ -2430,6 +2430,32 @@ async def get_zones(user: dict = Depends(get_current_user)):
         deserialize_datetime(zone, ['created_at'])
     return zones
 
+# Literal sub-paths must be registered before the parameterized /{zone_id} route
+# to prevent FastAPI from matching e.g. "federated-rounds" as zone_id.
+
+@api_router.get("/zones/federated-rounds")
+async def list_federated_rounds_early(
+    limit: int = 20,
+    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
+):
+    """List past federated learning rounds, newest first."""
+    cap = max(1, min(int(limit), 100))
+    rows = await db.federated_rounds.find({}, {"_id": 0}).sort("round_number", -1).limit(cap).to_list(cap)
+    return rows
+
+
+@api_router.get("/zones/federated-rounds/{round_id}")
+async def get_federated_round_early(
+    round_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
+):
+    """Fetch a single federated round by ID."""
+    doc = await db.federated_rounds.find_one({"id": round_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Federated round not found")
+    return doc
+
+
 @api_router.get("/zones/{zone_id}", response_model=Zone)
 async def get_zone(zone_id: str, user: dict = Depends(get_current_user)):
     zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
@@ -2667,29 +2693,6 @@ async def run_federated_round(
     await db.federated_rounds.insert_one(doc)
 
     return fed_round
-
-
-@api_router.get("/zones/federated-rounds")
-async def list_federated_rounds(
-    limit: int = 20,
-    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
-):
-    """List past federated learning rounds, newest first."""
-    cap = max(1, min(int(limit), 100))
-    rows = await db.federated_rounds.find({}, {"_id": 0}).sort("round_number", -1).limit(cap).to_list(cap)
-    return rows
-
-
-@api_router.get("/zones/federated-rounds/{round_id}")
-async def get_federated_round(
-    round_id: str = Path(..., pattern=_UUID_ID_PATTERN),
-    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
-):
-    """Fetch a single federated round by ID."""
-    doc = await db.federated_rounds.find_one({"id": round_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Federated round not found")
-    return doc
 
 
 # Sensor endpoints

@@ -1276,7 +1276,7 @@ def test_cooking_reading_rejects_unauthenticated(anon_api):
 def test_federated_round_runs_and_signs(api, auth_headers, seeded):
     """Running a federated round returns a signed FederatedRound and stores it."""
     r = api.post("/zones/federated-round", headers=auth_headers)
-    assert r.status_code == 200, r.text
+    assert r.status_code == 201, r.text
     body = r.json()
     assert body["id"]
     assert body["round_number"] >= 1
@@ -1289,15 +1289,15 @@ def test_federated_round_runs_and_signs(api, auth_headers, seeded):
 def test_federated_round_is_signed_on_chain(api, auth_headers, seeded):
     """After a round, the observation_id should point to a valid on-chain entry."""
     r = api.post("/zones/federated-round", headers=auth_headers)
-    assert r.status_code == 200, r.text
+    assert r.status_code == 201, r.text
     body = r.json()
     obs_id = body.get("observation_id")
-    if obs_id:
-        got = api.get(f"/observations/{obs_id}")
-        assert got.status_code == 200, got.text
-        obs = got.json()
-        assert obs["source_type"] == "federated_learning_round"
-        assert obs["verification"]["valid"] is True
+    assert obs_id, "round should be signed on the observation chain"
+    got = api.get(f"/observations/{obs_id}")
+    assert got.status_code == 200, got.text
+    obs = got.json()
+    assert obs["source_type"] == "federated_learning_round"
+    assert obs["verification"]["valid"] is True
 
 
 def test_federated_rounds_list(api, auth_headers, seeded):
@@ -1316,7 +1316,7 @@ def test_federated_rounds_list(api, auth_headers, seeded):
 def test_federated_round_get_by_id(api, auth_headers, seeded):
     """GET /zones/federated-rounds/{id} returns the specific round."""
     create_r = api.post("/zones/federated-round", headers=auth_headers)
-    assert create_r.status_code == 200, create_r.text
+    assert create_r.status_code == 201, create_r.text
     round_id = create_r.json()["id"]
     r = api.get(f"/zones/federated-rounds/{round_id}", headers=auth_headers)
     assert r.status_code == 200, r.text
