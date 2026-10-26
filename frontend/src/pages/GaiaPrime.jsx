@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -21,6 +21,8 @@ import {
   Terminal,
   ArrowLeft,
   Activity,
+  Download,
+  Eye,
 } from "lucide-react";
 
 // Public, verifiable rewilding surface. /gaia-prime is the page an
@@ -69,6 +71,16 @@ const SOURCE_CATEGORIES = [
     color: "oklch(60% 0.03 250)",
   },
 ];
+
+const SOURCE_LABELS = {
+  drone_telemetry: "Drone",
+  drone_position: "Drone",
+  sensor_reading: "Sensor",
+  satellite_image_hash: "Satellite",
+  species_identification: "AI",
+  metered_cooking_device: "Cooking",
+  zone_transition: "Zone",
+};
 
 function aggregateByCategory(bySourceType) {
   const totals = SOURCE_CATEGORIES.map((c) => ({ ...c, count: 0, members: [] }));
@@ -301,6 +313,345 @@ function KeyMaterialDisclosure({ keyInfo }) {
   );
 }
 
+// Browse recent signed observations and verify any one in-browser.
+function ObservationExplorer({ zones }) {
+  const [observations, setObservations] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [verifying, setVerifying] = useState({});
+
+  const load = useCallback(async (sourceType) => {
+    setLoading(true);
+    setError(null);
+    setVerifying({});
+    try {
+      const params = { limit: 25 };
+      if (sourceType && sourceType !== "all") params.source_type = sourceType;
+      const res = await provenanceAPI.listObservations(params);
+      setObservations(res.data || []);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load(filter);
+  }, [filter, load]);
+
+  const verifyOne = async (obs) => {
+    setVerifying((prev) => ({ ...prev, [obs.id]: "pending" }));
+    try {
+      const res = await provenanceAPI.verifyObservation(obs);
+      setVerifying((prev) => ({ ...prev, [obs.id]: res.data }));
+    } catch (err) {
+      setVerifying((prev) => ({
+        ...prev,
+        [obs.id]: { valid: false, reason: err.message },
+      }));
+    }
+  };
+
+  const zoneNameMap = Object.fromEntries(
+    (zones || []).map((z) => [z.id, z.name])
+  );
+  const FILTERS = [
+    "all",
+    "drone_telemetry",
+    "sensor_reading",
+    "satellite_image_hash",
+    "species_identification",
+  ];
+
+  return (
+    <section className="space-y-3" data-testid="observation-explorer">
+      <div className="flex items-center gap-2">
+        <Eye className="w-4 h-4 text-primary" />
+        <h2 className="font-heading text-lg font-semibold">
+          Live observation log
+        </h2>
+        <Badge variant="outline" className="text-[10px] ml-auto">
+          last 25
+        </Badge>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Every row is a signed, hash-chained observation. Click{" "}
+        <span className="font-medium text-foreground">verify</span> to confirm
+        the Ed25519 signature in the browser — no curl or Python required.
+      </p>
+      <div
+        className="flex flex-wrap gap-1.5"
+        role="group"
+        aria-label="Filter by source type"
+      >
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+              filter === f
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background border-border text-muted-foreground hover:border-primary hover:text-foreground"
+            }`}
+            data-testid={`obs-filter-${f}`}
+          >
+            {f === "all" ? "All" : SOURCE_LABELS[f] || f}
+          </button>
+        ))}
+      </div>
+      {loading ? (
+        <LoadingState label="Loading observations…" />
+      ) : error ? (
+        <ErrorState
+          title="Couldn't load observations"
+          error={error}
+          onRetry={() => load(filter)}
+        />
+      ) : observations.length === 0 ? (
+        <EmptyState
+          icon={Radio}
+          title="No observations yet"
+          description="Observations appear here once data flows in from drones, sensors, or satellites."
+        />
+      ) : (
+        <div className="overflow-x-auto rounded-md border border-border">
+          <table className="w-full text-xs" data-testid="observation-table">
+            <thead>
+              <tr className="bg-muted/50 text-muted-foreground text-[10px] uppercase tracking-wider">
+                <th className="px-3 py-2 text-left font-medium">Time</th>
+                <th className="px-3 py-2 text-left font-medium">Type</th>
+                <th className="px-3 py-2 text-left font-medium hidden sm:table-cell">
+                  Zone
+                </th>
+                <th className="px-3 py-2 text-left font-medium hidden md:table-cell">
+                  Digest
+                </th>
+                <th className="px-3 py-2 text-right font-medium">Sig</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {observations.map((obs) => {
+                const v = verifying[obs.id];
+                const catColor =
+                  SOURCE_CATEGORIES.find(
+                    (c) => !c.isCatchAll && c.sources.includes(obs.source_type)
+                  )?.color ||
+                  SOURCE_CATEGORIES.find((c) => c.isCatchAll)?.color;
+                return (
+                  <tr
+                    key={obs.id}
+                    className="hover:bg-muted/30 transition-colors"
+                    data-testid="obs-row"
+                  >
+                    <td className="px-3 py-2 font-mono whitespace-nowrap text-muted-foreground">
+                      {relativeTime(obs.observed_at)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span
+                        className="px-1.5 py-0.5 rounded text-[10px] text-white font-medium"
+                        style={{ backgroundColor: catColor }}
+                      >
+                        {SOURCE_LABELS[obs.source_type] || obs.source_type}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono hidden sm:table-cell text-muted-foreground">
+                      {zoneNameMap[obs.zone_id] ||
+                        (obs.zone_id ? obs.zone_id.slice(0, 8) + "…" : "—")}
+                    </td>
+                    <td className="px-3 py-2 font-mono hidden md:table-cell text-muted-foreground">
+                      {obs.digest ? obs.digest.slice(0, 14) + "…" : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {v === "pending" ? (
+                        <span className="text-muted-foreground text-[10px]">
+                          …
+                        </span>
+                      ) : v ? (
+                        <span
+                          className={`font-semibold ${
+                            v.valid
+                              ? "text-green-600 dark:text-green-400"
+                              : "text-red-500"
+                          }`}
+                          title={v.reason}
+                          data-testid="obs-verify-result"
+                        >
+                          {v.valid ? "✓" : "✗"}
+                        </span>
+                      ) : (
+                        <button
+                          className="text-[10px] text-primary hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                          onClick={() => verifyOne(obs)}
+                          data-testid="obs-verify-btn"
+                          disabled={!obs.signature}
+                          title={
+                            obs.signature
+                              ? "Verify Ed25519 signature"
+                              : "No signature (redacted or unsigned)"
+                          }
+                        >
+                          {obs.signature ? "verify" : "—"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Paste any observation JSON and verify its signature in-browser.
+// Uses POST /api/observations/verify — stateless, public, no auth needed.
+function InBrowserVerifier() {
+  const [json, setJson] = useState("");
+  const [result, setResult] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+  const [parseError, setParseError] = useState(null);
+
+  const handleVerify = async () => {
+    setParseError(null);
+    setResult(null);
+    let parsed;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      setParseError("Invalid JSON — check your pasted text.");
+      return;
+    }
+    setVerifying(true);
+    try {
+      const res = await provenanceAPI.verifyObservation(parsed);
+      setResult(res.data);
+    } catch (err) {
+      setResult({
+        valid: false,
+        reason:
+          err.response?.data?.detail || err.message || "Request failed",
+      });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const clear = () => {
+    setJson("");
+    setResult(null);
+    setParseError(null);
+  };
+
+  return (
+    <section className="space-y-3" data-testid="in-browser-verifier">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="w-4 h-4 text-primary" />
+        <h2 className="font-heading text-lg font-semibold">
+          Verify in your browser
+        </h2>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Paste any signed observation JSON — from{" "}
+        <code className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
+          GET /api/observations
+        </code>{" "}
+        or an offline file — and confirm the Ed25519 signature instantly. The
+        verify endpoint is stateless and public: we never need to have stored
+        the observation.
+      </p>
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <textarea
+            className="w-full h-40 bg-muted/50 border border-border rounded-md p-3 text-xs font-mono text-foreground resize-y focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder={
+              '{\n  "id": "...",\n  "source_type": "drone_telemetry",\n  "digest": "...",\n  "signature": "...",\n  "key_id": "...",\n  ...\n}'
+            }
+            value={json}
+            onChange={(e) => {
+              setJson(e.target.value);
+              setResult(null);
+              setParseError(null);
+            }}
+            data-testid="verifier-textarea"
+            aria-label="Observation JSON to verify"
+          />
+          {parseError && (
+            <p
+              className="text-xs text-destructive"
+              data-testid="verifier-parse-error"
+            >
+              {parseError}
+            </p>
+          )}
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={handleVerify}
+              disabled={!json.trim() || verifying}
+              size="sm"
+              data-testid="verifier-submit"
+            >
+              {verifying ? "Verifying…" : "Verify signature"}
+            </Button>
+            {json.trim() && !verifying && (
+              <button
+                className="text-xs text-muted-foreground hover:text-foreground underline"
+                onClick={clear}
+                data-testid="verifier-clear"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {result && (
+            <div
+              className={`flex items-start gap-3 p-3 rounded-md ${
+                result.valid
+                  ? "bg-green-50 border border-green-200 text-green-900 dark:bg-green-900/20 dark:border-green-800 dark:text-green-200"
+                  : "bg-red-50 border border-red-200 text-red-900 dark:bg-red-900/20 dark:border-red-800 dark:text-red-200"
+              }`}
+              data-testid="verifier-result"
+            >
+              <span
+                className="text-lg leading-none mt-0.5 select-none"
+                aria-hidden="true"
+              >
+                {result.valid ? "✓" : "✗"}
+              </span>
+              <div>
+                <p className="text-sm font-semibold">
+                  {result.valid ? "Valid signature" : "Invalid signature"}
+                </p>
+                {result.reason && (
+                  <p className="text-xs mt-1 opacity-80">{result.reason}</p>
+                )}
+                {result.key_id && (
+                  <p className="text-xs mt-1.5 font-mono opacity-70">
+                    key_id: {result.key_id}
+                  </p>
+                )}
+                {result.valid &&
+                  result.current_key_id &&
+                  result.key_id !== result.current_key_id && (
+                    <p className="text-xs mt-1.5 text-amber-700 dark:text-amber-400">
+                      ⚠ Signed with a rotated key (current:{" "}
+                      {result.current_key_id.slice(0, 8)}…). Signature is
+                      still valid — key rotation is documented in the
+                      methodology.
+                    </p>
+                  )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
 export default function GaiaPrime() {
   const [zones, setZones] = useState([]);
   const [keyInfo, setKeyInfo] = useState(null);
@@ -347,6 +698,57 @@ export default function GaiaPrime() {
 
   const { rows: attestationRows, retry: retryAttestation } =
     useZoneAttestations(zones);
+
+  const downloadAuditBundle = useCallback(() => {
+    if (!stats || !keyInfo) return;
+    const bundle = {
+      generated_at: new Date().toISOString(),
+      platform: "Autonomous Ecosystem Architect — Verifiable Rewilding Chain",
+      chain: {
+        key_id: keyInfo.kid,
+        algorithm: keyInfo.alg || "EdDSA",
+        curve: keyInfo.crv || "Ed25519",
+        public_key_x: keyInfo.x || "(fetch from /.well-known/keys.json)",
+        jwk_url: `${API_BASE}/.well-known/keys.json`,
+      },
+      stats: {
+        total_observations: stats.total_observations,
+        zones_with_observations: stats.zones_with_observations,
+        latest_observation_at: stats.latest_observation_at,
+        window_hours: 168,
+        by_source_type: stats.by_source_type,
+      },
+      zones: attestationRows
+        .filter((r) => r.data)
+        .map((r) => ({
+          id: r.zone.id,
+          name: r.zone.name,
+          attestation: {
+            aggregate_root: r.data.aggregate_root,
+            observation_count: r.data.count,
+            since: r.data.since,
+            key_id: r.data.key_id,
+          },
+        })),
+      verification_instructions: {
+        "1_fetch_key": `curl -s ${API_BASE}/.well-known/keys.json | jq .keys[0]`,
+        "2_pull_attestation": `curl -s '${API_BASE}/api/zones/{zone_id}/attestation?hours=168' | jq`,
+        "3_verify_observation": `curl -s -X POST ${API_BASE}/api/observations/verify -H 'Content-Type: application/json' -d @observation.json | jq`,
+        "4_recompute_root": "SHA-256(sorted observation digests, newline-joined) must equal aggregate_root",
+      },
+    };
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `gaia-prime-audit-bundle-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [stats, keyInfo, attestationRows]);
 
   const keyId = keyInfo?.kid || "—";
   const verifyCurl = `$ curl -s ${API_BASE}/.well-known/keys.json | jq .keys[0]
@@ -401,12 +803,27 @@ export default function GaiaPrime() {
             </p>
             <VerifyThisPage stats={stats} apiBase={API_BASE} />
           </div>
-          <Link to="/public" data-testid="back-to-public-dashboard">
-            <Button variant="outline" size="sm" className="gap-1.5">
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Public dashboard
-            </Button>
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-2">
+            {stats && keyInfo && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={downloadAuditBundle}
+                data-testid="download-audit-bundle"
+                title="Download a compiled JSON bundle: key material, chain stats, and all zone attestation roots for offline verification"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download audit bundle
+              </Button>
+            )}
+            <Link to="/public" data-testid="back-to-public-dashboard">
+              <Button variant="outline" size="sm" className="gap-1.5 w-full sm:w-auto">
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Public dashboard
+              </Button>
+            </Link>
+          </div>
         </header>
 
         <Separator />
@@ -553,6 +970,14 @@ export default function GaiaPrime() {
                 </>
               )}
             </section>
+
+            <ObservationExplorer zones={zones} />
+
+            <Separator />
+
+            <InBrowserVerifier />
+
+            <Separator />
 
             <section className="space-y-3">
               <div className="flex items-center gap-2">
