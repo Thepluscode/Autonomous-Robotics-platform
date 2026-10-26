@@ -2090,7 +2090,7 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
     # is fully usable without it.
     ai_recommendation: Optional[dict] = None
     try:
-        if not os.environ.get("LLM_DISABLE", "").lower() in {"1", "true", "yes"}:
+        if os.environ.get("LLM_DISABLE", "").lower() not in {"1", "true", "yes"}:
             chat = make_llm_chat(
                 session_id=f"mission-plan-{zone['id'][:8]}",
                 system_message=(
@@ -2138,6 +2138,8 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
                 "llm_model": os.environ.get("LLM_MODEL") or os.environ.get("LLM_PROVIDER", "openai"),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             }
+        else:
+            raise RuntimeError("LLM disabled")
     except Exception as _ai_exc:
         logging.info("_plan_mission: LLM recommendation skipped: %s", _ai_exc)
         # Deterministic fallback — captures the same structure so the UI never
@@ -2622,7 +2624,7 @@ async def complete_mission(request: Request, mission_id: str = Path(..., pattern
                 "go_score": mission.get("go_score", 0),
                 "risk_score": mission.get("risk_score", 0),
                 "estimated_biodiversity_delta_7d": impact_delta,
-                "completed_by": user.get("email") or user.get("id"),
+                "completed_by": user.get("id") or str(user.get("_id", "unknown")),
                 "ai_recommendation": mission.get("ai_recommendation"),
             },
         )

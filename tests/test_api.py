@@ -1290,21 +1290,16 @@ def test_mission_generate_includes_ai_recommendation(api, auth_headers, seeded):
     assert isinstance(rec.get("success_criteria"), list)
 
 
-def test_mission_complete_signs_outcome_to_chain(api, auth_headers, seeded):
+def test_mission_complete_signs_outcome_to_chain(api, auth_headers, unique_name):
     """Complete a mission end-to-end; outcome must be signed as an observation."""
-    # Generate
-    gen = api.post(
-        "/missions/generate",
-        json={"mission_type": "patrol", "max_drones": 0, "max_robots": 0},
-        headers=auth_headers,
+    mission, _zone_id, _drone_ids = _create_mission_ready_fixture(
+        api, unique_name, auth_headers, suffix="-chain"
     )
-    assert gen.status_code == 200, gen.text
-    mission_id = gen.json()["id"]
+    mission_id = mission["id"]
 
-    # Authorize (may fail if go_score < MISSION_GO_SCORE_FLOOR → status=draft)
+    # Authorize (fixture ensures go_score >= MISSION_GO_SCORE_FLOOR)
     auth_r = api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
-    if auth_r.status_code == 400:
-        pytest.skip("Mission go_score too low to authorize in CI — no live assets")
+    assert auth_r.status_code == 200, auth_r.text
 
     # Complete
     comp = api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
