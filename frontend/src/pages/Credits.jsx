@@ -11,6 +11,7 @@ import { formatDateTime } from "../lib/utils";
 import { Leaf, Plus, ChevronDown, ChevronUp, Download, Shield, TrendingUp, TrendingDown } from "lucide-react";
 import { LoadingState, EmptyState, ErrorState } from "../components/state";
 import { toast } from "../lib/toast";
+import { useAuth } from "../contexts/AuthContext";
 
 const METHODOLOGIES = [
   { value: "verra_vm0033", label: "Verra VM0033 — Avoided Unplanned Deforestation" },
@@ -144,6 +145,9 @@ function ReportCard({ report }) {
 }
 
 export default function Credits() {
+  const { hasRole } = useAuth();
+  const canGenerate = hasRole(["admin", "field_operator"]);
+
   const [reports, setReports] = useState([]);
   const [zones, setZones] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -182,10 +186,12 @@ export default function Credits() {
   const handleGenerate = async () => {
     setGenerating(true);
     try {
+      // period_end is exclusive on the backend; send the start of the day after
+      // the selected end date so the selected day is fully included.
       const payload = {
         ...form,
         period_start: new Date(form.period_start).toISOString(),
-        period_end: new Date(form.period_end).toISOString(),
+        period_end: new Date(new Date(form.period_end).getTime() + 86400000).toISOString(),
         project_name: form.project_name || undefined,
         project_notes: form.project_notes || undefined,
       };
@@ -226,9 +232,11 @@ export default function Credits() {
     <div className="space-y-6" data-testid="credits-page">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{reports.length} report{reports.length !== 1 ? "s" : ""}</p>
-        <Button size="sm" onClick={() => setDialogOpen(true)} data-testid="generate-report-btn">
-          <Plus className="w-4 h-4 mr-1" />Generate report
-        </Button>
+        {canGenerate && (
+          <Button size="sm" onClick={() => setDialogOpen(true)} data-testid="generate-report-btn">
+            <Plus className="w-4 h-4 mr-1" />Generate report
+          </Button>
+        )}
       </div>
 
       {reports.length === 0 ? (
@@ -236,11 +244,11 @@ export default function Credits() {
           icon={Leaf}
           title="No credit reports yet"
           description="Generate an MRV-compliant report to calculate carbon credit estimates from signed observations."
-          action={
+          action={canGenerate ? (
             <Button size="sm" onClick={() => setDialogOpen(true)}>
               <Plus className="w-4 h-4 mr-1" />Generate report
             </Button>
-          }
+          ) : undefined}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

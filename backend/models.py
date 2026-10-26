@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 # ==================== AUTH MODELS ====================
@@ -643,7 +643,7 @@ class CreditReportRequest(BaseModel):
         ...,
         description="ISO-8601 end of the monitoring period (exclusive).",
     )
-    methodology: str = Field(
+    methodology: Literal["verra_vm0033", "gold_standard_icroa", "vcs_afolu"] = Field(
         default="verra_vm0033",
         description=(
             "Credit methodology identifier. Supported: "
@@ -654,6 +654,20 @@ class CreditReportRequest(BaseModel):
     )
     project_name: Optional[str] = None
     project_notes: Optional[str] = None
+
+    @field_validator("period_start", "period_end")
+    @classmethod
+    def _normalize_period(cls, v: str) -> str:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    @model_validator(mode="after")
+    def _check_period_order(self) -> "CreditReportRequest":
+        if self.period_start >= self.period_end:
+            raise ValueError("period_start must be strictly before period_end")
+        return self
 
 
 class CreditReportZoneSummary(BaseModel):
@@ -699,7 +713,8 @@ class CreditReport(BaseModel):
     # Verification instructions
     verification_url: str = "/api/observations/verify"
     verification_note: str = (
-        "Each observation listed in zone_observation_ids can be independently "
-        "verified by POSTing it to the verification_url. The report itself "
+        "Raw observations can be retrieved via GET /api/zones/{zone_id}/attestation "
+        "for each zone in this report. Each observation can be independently verified "
+        "by POSTing its payload to the verification_url. The report summary itself "
         "is also a signed observation (report_observation_id)."
     )

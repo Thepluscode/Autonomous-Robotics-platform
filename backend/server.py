@@ -3324,9 +3324,15 @@ async def generate_credit_report(
         zones_cursor = db.zones.find({"id": {"$in": req.zone_ids}}, {"_id": 0})
     else:
         zones_cursor = db.zones.find({}, {"_id": 0})
-    zone_docs = await zones_cursor.to_list(500)
+    _zone_cap = 500
+    zone_docs = await zones_cursor.to_list(_zone_cap + 1)
     if not zone_docs:
         raise HTTPException(status_code=404, detail="No zones found matching the request.")
+    if len(zone_docs) > _zone_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many zones match this request (>{_zone_cap}). Narrow the zone selection.",
+        )
 
     zone_map = {z["id"]: z for z in zone_docs if z.get("id")}
 
@@ -3335,7 +3341,13 @@ async def generate_credit_report(
         "zone_id": {"$in": list(zone_map.keys())},
         "observed_at": {"$gte": period_start, "$lt": period_end},
     }
-    all_obs = await db.observations.find(obs_query, {"_id": 0}).sort("observed_at", 1).to_list(5000)
+    _obs_cap = 5000
+    all_obs = await db.observations.find(obs_query, {"_id": 0}).sort("observed_at", 1).to_list(_obs_cap + 1)
+    if len(all_obs) > _obs_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many observations in this period (>{_obs_cap}). Narrow the period or zone selection.",
+        )
 
     # --- Build per-zone summaries ---
     from collections import defaultdict
@@ -3364,17 +3376,23 @@ async def generate_credit_report(
             if isinstance(payload, dict):
                 if "biodiversity_index" in payload:
                     try:
-                        biodiversity_vals.append(float(payload["biodiversity_index"]))
+                        v = float(payload["biodiversity_index"])
+                        if math.isfinite(v):
+                            biodiversity_vals.append(v)
                     except (TypeError, ValueError):
                         pass
                 if "soil_health" in payload:
                     try:
-                        soil_vals.append(float(payload["soil_health"]))
+                        v = float(payload["soil_health"])
+                        if math.isfinite(v):
+                            soil_vals.append(v)
                     except (TypeError, ValueError):
                         pass
                 if "vegetation_coverage" in payload:
                     try:
-                        veg_vals.append(float(payload["vegetation_coverage"]))
+                        v = float(payload["vegetation_coverage"])
+                        if math.isfinite(v):
+                            veg_vals.append(v)
                     except (TypeError, ValueError):
                         pass
 
@@ -3393,20 +3411,16 @@ async def generate_credit_report(
             den = sum((xs[i] - x_mean) ** 2 for i in range(n))
             bio_trend = round(num / den, 6) if den else None
 
-        # Compute attestation root: SHA-256 over sorted observation digests
+        # Compute attestation root using same algorithm as /api/zones/{id}/attestation:
+        # SHA-256 over newline-joined sorted digests so auditor comparisons agree.
         attest_root: Optional[str] = None
         digests = sorted(o.get("digest") or "" for o in obs if o.get("digest"))
         if digests:
-            h = hashlib.sha256()
-            for d in digests:
-                h.update(d.encode())
-            attest_root = h.hexdigest()
+            attest_root = hashlib.sha256("\n".join(digests).encode("utf-8")).hexdigest()
 
-        # Use zone's current biodiversity_index as the avg_bio fallback if no
-        # signed observations carried the metric directly.
-        if avg_bio is None:
-            avg_bio = zone_doc.get("biodiversity_index")
-
+        # Do NOT fall back to the zone's current biodiversity_index — that value
+        # is not tied to the reporting period and would produce a non-zero tCO₂e
+        # estimate for zones with zero period observations.
         tco2e = _estimate_zone_tco2e(zone_doc, avg_bio)
 
         zone_summaries.append(
@@ -3428,6 +3442,7 @@ async def generate_credit_report(
     total_tco2e = round(sum(s.estimated_tco2e for s in zone_summaries), 2)
     report_id = str(__import__("uuid").uuid4())
     generated_by_name = user.get("name") or user.get("email") or "unknown"
+    generated_by_user_id = user.get("id") or user.get("_id") or "unknown"
 
     report = CreditReport(
         id=report_id,
@@ -3460,7 +3475,7 @@ async def generate_credit_report(
                 "total_zones": len(zone_summaries),
                 "total_observations": len(all_obs),
                 "total_estimated_tco2e": total_tco2e,
-                "generated_by": generated_by_name,
+                "generated_by_user_id": generated_by_user_id,
                 "zone_ids": [s.zone_id for s in zone_summaries],
             },
         )
