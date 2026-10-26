@@ -2474,6 +2474,9 @@ async def ai_recommend_mission(request: Request, body: Optional[dict] = None):
                 raise ValueError(f"invalid recommended_mission_type {item.get('recommended_mission_type')!r}")
             if item.get("urgency") not in {"low", "medium", "high", "critical"}:
                 raise ValueError(f"invalid urgency {item.get('urgency')!r}")
+            rank = item.get("rank")
+            if not isinstance(rank, int) or rank < 1:
+                raise ValueError(f"LLM rank {rank!r} is not a positive integer")
             item["zone_id"] = full_id
         ranked = parsed
         llm_model_used = os.environ.get("LLM_MODEL") or os.environ.get("LLM_PROVIDER", "openai")
