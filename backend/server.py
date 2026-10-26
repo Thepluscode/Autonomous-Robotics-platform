@@ -2475,7 +2475,7 @@ async def ai_recommend_mission(request: Request, body: Optional[dict] = None):
             if item.get("urgency") not in {"low", "medium", "high", "critical"}:
                 raise ValueError(f"invalid urgency {item.get('urgency')!r}")
             rank = item.get("rank")
-            if not isinstance(rank, int) or rank < 1:
+            if type(rank) is not int or rank < 1:
                 raise ValueError(f"LLM rank {rank!r} is not a positive integer")
             item["zone_id"] = full_id
         ranked = parsed
