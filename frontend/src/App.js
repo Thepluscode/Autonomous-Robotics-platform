@@ -31,6 +31,7 @@ import GaiaPrime from "./pages/GaiaPrime";
 import NotificationSettings from "./pages/NotificationSettings";
 import MissionControl from "./pages/MissionControl";
 import RoboticsCommandCenter from "./pages/RoboticsCommandCenter";
+import FederatedLearning from "./pages/FederatedLearning";
 
 const routerFuture = {
   v7_startTransition: true,
@@ -90,6 +91,8 @@ export default function App() {
           <Route path="/team" element={<ProtectedPage title="Team Collaboration"><TeamCollaboration /></ProtectedPage>} />
           <Route path="/reports" element={<ProtectedPage title="Reports"><Reports /></ProtectedPage>} />
           <Route path="/notifications" element={<ProtectedPage title="Notifications"><NotificationSettings /></ProtectedPage>} />
+
+          <Route path="/federated-learning" element={<ProtectedPage title="Federated Learning" roles={["admin", "scientist"]}><FederatedLearning /></ProtectedPage>} />
 
           {/* Catch all */}
           <Route path="*" element={<Navigate to="/" replace />} />

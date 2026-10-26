@@ -7,7 +7,7 @@ import { Button } from "../ui/button";
 import {
   LayoutDashboard, Plane, MapPin, BarChart3, Brain, Route, FileText,
   Map, Camera, Bug, Cloud, TrendingUp, Zap, Shield, Users, Download,
-  Bell, LogOut, Leaf, ChevronLeft, ChevronRight, Rocket, Bot,
+  Bell, LogOut, Leaf, ChevronLeft, ChevronRight, Rocket, Bot, Network,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 
@@ -41,6 +41,7 @@ const navSections = [
       { to: "/forecasting", icon: TrendingUp, label: "Forecasting", roles: ["admin", "scientist"] },
       { to: "/interventions", icon: Zap, label: "Interventions", roles: ["admin", "scientist"] },
       { to: "/weather", icon: Cloud, label: "Weather" },
+      { to: "/federated-learning", icon: Network, label: "Federated Learning", roles: ["admin", "scientist"] },
     ],
   },
   {
