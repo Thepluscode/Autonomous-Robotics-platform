@@ -1379,3 +1379,57 @@ def test_generate_credit_report_rejects_unauthenticated(anon_api):
     )
     assert r.status_code == 401
 
+
+# ---------------------- Verra submission (dry-run) ----------------------------
+
+def test_submit_credit_report_to_verra_dry_run(api, auth_headers, seeded):
+    """POST /credits/{id}/submit-verra returns a formatted Verra payload in
+    dry-run mode (no VERRA_REGISTRY_URL configured in test env)."""
+    gen = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "verra_vm0033",
+        },
+        headers=auth_headers,
+    )
+    assert gen.status_code == 201, gen.text
+    report_id = gen.json()["id"]
+
+    r = api.post(f"/credits/{report_id}/submit-verra", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Without VERRA_REGISTRY_URL set, the endpoint returns the dry-run payload
+    assert body["mode"] in ("dry_run", "live")
+    assert body["report_id"] == report_id
+    payload = body["verra_payload"]
+    assert payload["standard"] in ("VCS", "Gold Standard")
+    assert payload["methodology"]
+    assert payload["reportId"] == report_id
+    assert isinstance(payload["zoneSummaries"], list)
+    assert payload["verificationEndpoint"] == "/api/observations/verify"
+
+
+def test_submit_credit_report_verra_rejects_unauthenticated(anon_api, api, auth_headers, seeded):
+    gen = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "gold_standard_icroa",
+        },
+        headers=auth_headers,
+    )
+    assert gen.status_code == 201
+    report_id = gen.json()["id"]
+    r = anon_api.post(f"/credits/{report_id}/submit-verra")
+    assert r.status_code == 401
+
+
+def test_submit_credit_report_verra_404_on_missing(api, auth_headers):
+    import uuid
+    r = api.post(f"/credits/{uuid.uuid4()}/submit-verra", headers=auth_headers)
+    assert r.status_code == 404

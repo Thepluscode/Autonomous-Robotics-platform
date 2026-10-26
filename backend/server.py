@@ -3501,6 +3501,141 @@ async def get_credit_report(
     return doc
 
 
+@api_router.post("/credits/{report_id}/submit-verra", status_code=200)
+async def submit_credit_report_to_verra(
+    report_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    user: dict = Depends(require_role(["admin"])),
+):
+    """Format a generated MRV report as a Verra-compatible JSON payload and
+    submit it to the registry endpoint configured via VERRA_REGISTRY_URL.
+
+    If VERRA_REGISTRY_URL is not set, the formatted payload is returned for
+    operator review without making a network call (dry-run mode). This allows
+    operators to inspect the payload and wire it to any registry endpoint.
+
+    The signed observation chain means Verra (or Gold Standard) can
+    independently verify every observation that underlies the credit estimate
+    by calling POST /api/observations/verify on each source hash.
+    """
+    import os, httpx
+
+    doc = await db.credit_reports.find_one({"id": report_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Credit report not found")
+
+    # Map internal methodology IDs to Verra/GS registry codes
+    methodology_registry_map = {
+        "verra_vm0033": {"standard": "VCS", "methodology": "VM0033", "version": "1.0"},
+        "gold_standard_icroa": {"standard": "Gold Standard", "methodology": "ICROA-BIO", "version": "2.0"},
+        "vcs_afolu": {"standard": "VCS", "methodology": "VM0007", "version": "1.6"},
+    }
+    registry_meta = methodology_registry_map.get(
+        doc.get("methodology", ""),
+        {"standard": "VCS", "methodology": doc.get("methodology", ""), "version": "1.0"},
+    )
+
+    # Build the Verra-compatible submission payload
+    verra_payload = {
+        "projectName": doc.get("project_name") or "Autonomous Ecosystem Rewilding Platform",
+        "projectNotes": doc.get("project_notes") or "",
+        "monitoringPeriodStart": doc.get("period_start"),
+        "monitoringPeriodEnd": doc.get("period_end"),
+        "standard": registry_meta["standard"],
+        "methodology": registry_meta["methodology"],
+        "methodologyVersion": registry_meta["version"],
+        "totalEstimatedTco2e": doc.get("total_estimated_tco2e", 0.0),
+        "totalZones": doc.get("total_zones", 0),
+        "totalObservations": doc.get("total_observations", 0),
+        "reportId": doc["id"],
+        "reportCreatedAt": doc.get("created_at"),
+        "reportSignatureId": doc.get("report_observation_id"),
+        "reportDigest": doc.get("report_digest"),
+        "verificationEndpoint": "/api/observations/verify",
+        "verificationNote": (
+            "All observations underlying this report are signed on the "
+            "autonomous platform's Ed25519 chain. Independent verification: "
+            "POST each source hash to the verificationEndpoint."
+        ),
+        "zoneSummaries": [
+            {
+                "zoneId": z.get("zone_id"),
+                "zoneName": z.get("zone_name"),
+                "zoneType": z.get("zone_type"),
+                "observationCount": z.get("observation_count", 0),
+                "estimatedTco2e": z.get("estimated_tco2e", 0.0),
+                "avgBiodiversityIndex": z.get("avg_biodiversity_index"),
+                "avgSoilHealth": z.get("avg_soil_health"),
+                "avgVegetationCoverage": z.get("avg_vegetation_coverage"),
+                "biodiversityTrend": z.get("biodiversity_trend"),
+                "attestationRoot": z.get("attestation_root"),
+            }
+            for z in doc.get("zones", [])
+        ],
+    }
+
+    registry_url = os.environ.get("VERRA_REGISTRY_URL", "").strip()
+    if not registry_url:
+        # Dry-run: return the formatted payload for operator review
+        return {
+            "mode": "dry_run",
+            "message": (
+                "VERRA_REGISTRY_URL is not configured. Set it to a Verra/GS "
+                "registry API endpoint to enable live submission. Returning the "
+                "formatted payload for review."
+            ),
+            "report_id": report_id,
+            "verra_payload": verra_payload,
+            "submission_id": None,
+        }
+
+    # Live submission
+    try:
+        verra_api_key = os.environ.get("VERRA_API_KEY", "")
+        headers = {"Content-Type": "application/json"}
+        if verra_api_key:
+            headers["Authorization"] = f"Bearer {verra_api_key}"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(registry_url, json=verra_payload, headers=headers)
+
+        submission_id = None
+        try:
+            resp_body = resp.json()
+            submission_id = resp_body.get("submissionId") or resp_body.get("id") or resp_body.get("reference")
+        except Exception:
+            resp_body = resp.text
+
+        # Record the submission against the report
+        await db.credit_reports.update_one(
+            {"id": report_id},
+            {"$set": {
+                "verra_submission_status": resp.status_code,
+                "verra_submission_id": submission_id,
+                "verra_submitted_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+
+        if resp.status_code not in (200, 201, 202):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Verra registry returned {resp.status_code}: {resp_body}",
+            )
+
+        return {
+            "mode": "live",
+            "report_id": report_id,
+            "submission_id": submission_id,
+            "registry_status": resp.status_code,
+            "verra_payload": verra_payload,
+            "registry_response": resp_body,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("verra submission failed for report %s: %s", report_id, exc)
+        raise HTTPException(status_code=502, detail=f"Registry submission error: {exc}")
+
+
 @api_router.get("/observations/{observation_id}")
 async def get_observation(observation_id: str = Path(..., pattern=_UUID_ID_PATTERN)):
     obs = await db.observations.find_one({"id": observation_id}, {"_id": 0})
