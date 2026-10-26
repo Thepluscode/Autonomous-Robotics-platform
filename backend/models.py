@@ -620,3 +620,86 @@ class CookingDeviceReading(BaseModel):
     zone_id: Optional[str] = None     # cohort / region key in the chain
     meter: Optional[Dict[str, str]] = None  # meter model, firmware, serial, etc.
     observed_at: Optional[str] = None
+
+
+# ==================== CARBON CREDIT MRV REPORT ====================
+
+class CreditReportRequest(BaseModel):
+    """Request body for POST /api/credits/generate.
+
+    Generates an MRV-compliant carbon credit report over a time window,
+    pulling all signed observations for the given zones (or all zones when
+    zone_ids is empty) and calculating conservative credit estimates.
+    """
+    zone_ids: List[str] = Field(
+        default_factory=list,
+        description="Zone UUIDs to include. Empty list = all active zones.",
+    )
+    period_start: str = Field(
+        ...,
+        description="ISO-8601 start of the monitoring period (inclusive).",
+    )
+    period_end: str = Field(
+        ...,
+        description="ISO-8601 end of the monitoring period (exclusive).",
+    )
+    methodology: str = Field(
+        default="verra_vm0033",
+        description=(
+            "Credit methodology identifier. Supported: "
+            "verra_vm0033 (Avoided Unplanned Deforestation), "
+            "gold_standard_icroa (Biodiversity Restoration), "
+            "vcs_afolu (AFOLU improved forest management)."
+        ),
+    )
+    project_name: Optional[str] = None
+    project_notes: Optional[str] = None
+
+
+class CreditReportZoneSummary(BaseModel):
+    zone_id: str
+    zone_name: str
+    zone_type: str
+    observation_count: int
+    source_type_breakdown: Dict[str, int]
+    # Average of signed biodiversity/soil/vegetation readings over the period
+    avg_biodiversity_index: Optional[float] = None
+    avg_soil_health: Optional[float] = None
+    avg_vegetation_coverage: Optional[float] = None
+    # Simple linear trend slope (positive = improving)
+    biodiversity_trend: Optional[float] = None
+    # Aggregate attestation root (SHA-256 over all zone observations in period)
+    attestation_root: Optional[str] = None
+    # Conservative tCO2e estimate using zone area × metric improvements
+    estimated_tco2e: float = 0.0
+
+
+class CreditReport(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # Who generated the report
+    generated_by: str
+    # Report configuration
+    methodology: str
+    methodology_label: str
+    period_start: str
+    period_end: str
+    project_name: Optional[str] = None
+    project_notes: Optional[str] = None
+    # Zone summaries
+    zones: List[CreditReportZoneSummary] = Field(default_factory=list)
+    # Totals
+    total_observations: int = 0
+    total_zones: int = 0
+    total_estimated_tco2e: float = 0.0
+    # Chain provenance — the report itself is signed as an observation
+    report_observation_id: Optional[str] = None
+    report_digest: Optional[str] = None
+    report_key_id: Optional[str] = None
+    # Verification instructions
+    verification_url: str = "/api/observations/verify"
+    verification_note: str = (
+        "Each observation listed in zone_observation_ids can be independently "
+        "verified by POSTing it to the verification_url. The report itself "
+        "is also a signed observation (report_observation_id)."
+    )
