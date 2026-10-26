@@ -3603,6 +3603,29 @@ async def submit_credit_report_to_verra(
             "submission_id": None,
         }
 
+    # Validate HTTPS before sending report payload or API key over the network
+    from urllib.parse import urlparse as _urlparse
+    if _urlparse(registry_url).scheme.lower() != "https":
+        raise HTTPException(
+            status_code=500,
+            detail="VERRA_REGISTRY_URL must use https://",
+        )
+
+    # Reject unsigned reports — a null reportSignatureId/reportDigest would
+    # violate the signed-observation contract that auditors verify against.
+    if not doc.get("report_observation_id") or not doc.get("report_digest"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot submit an unsigned report. The report must have a valid report_observation_id and report_digest.",
+        )
+
+    # Atomic claim: reject duplicate submissions to prevent double-posting.
+    if doc.get("verra_submission_id") or doc.get("verra_submission_status") in (200, 201, 202, "pending"):
+        raise HTTPException(
+            status_code=409,
+            detail="Report has already been submitted or has a pending submission.",
+        )
+
     # Live submission
     try:
         verra_api_key = os.environ.get("VERRA_API_KEY", "")
@@ -3613,14 +3636,29 @@ async def submit_credit_report_to_verra(
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(registry_url, json=verra_payload, headers=headers)
 
-        submission_id = None
         try:
             resp_body = resp.json()
-            submission_id = resp_body.get("submissionId") or resp_body.get("id") or resp_body.get("reference")
-        except Exception:
+        except ValueError:
             resp_body = resp.text
 
-        # Record the submission against the report
+        # Check status before extracting or persisting any submission metadata.
+        # Error bodies often contain id/reference fields that must not be saved
+        # as a successful submission_id.
+        if resp.status_code not in (200, 201, 202):
+            await db.credit_reports.update_one(
+                {"id": report_id},
+                {"$set": {"verra_last_error_status": resp.status_code}},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Verra registry returned {resp.status_code}: {resp_body}",
+            )
+
+        submission_id = None
+        if isinstance(resp_body, dict):
+            submission_id = resp_body.get("submissionId") or resp_body.get("id") or resp_body.get("reference")
+
+        # Record the submission only on success
         await db.credit_reports.update_one(
             {"id": report_id},
             {"$set": {
@@ -3629,12 +3667,6 @@ async def submit_credit_report_to_verra(
                 "verra_submitted_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
-
-        if resp.status_code not in (200, 201, 202):
-            raise HTTPException(
-                status_code=502,
-                detail=f"Verra registry returned {resp.status_code}: {resp_body}",
-            )
 
         return {
             "mode": "live",

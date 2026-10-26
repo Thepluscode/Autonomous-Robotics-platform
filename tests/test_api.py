@@ -1402,7 +1402,7 @@ def test_submit_credit_report_to_verra_dry_run(api, auth_headers, seeded):
     assert r.status_code == 200, r.text
     body = r.json()
     # Without VERRA_REGISTRY_URL set, the endpoint returns the dry-run payload
-    assert body["mode"] in ("dry_run", "live")
+    assert body["mode"] == "dry_run"
     assert body["report_id"] == report_id
     payload = body["verra_payload"]
     assert payload["standard"] in ("VCS", "Gold Standard")
