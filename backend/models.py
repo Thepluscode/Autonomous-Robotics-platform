@@ -717,6 +717,7 @@ class CreditReport(BaseModel):
         "observation. Public observation endpoints may return only the newest 1000 "
         "records, may include observations outside the report period, and redact "
         "payloads. Auditors cannot use them to verify every source observation or "
-        "re-derive the report root. The report summary itself is a signed observation "
-        "(report_observation_id)."
+        "re-derive the report root. To independently verify source observations, call "
+        "GET /api/zones/{zone_id}/attestation for each zone in this report. "
+        "The report summary itself is a signed observation (report_observation_id)."
     )

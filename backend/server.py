@@ -3309,10 +3309,11 @@ async def generate_credit_report(
     source_type="mrv_report" so the document is cryptographically linked
     to the chain it summarises.
 
-    The returned JSON is self-contained: an auditor can re-derive the
-    attestation roots from the raw observation list and verify every
-    signature offline using the published Ed25519 key at
-    /.well-known/keys.json.
+    The report does not embed the raw source observations. Auditors who
+    need to re-derive attestation roots or verify underlying signatures
+    should call GET /api/zones/{zone_id}/attestation for each zone in the
+    report, then verify signatures via /api/observations/verify with the
+    Ed25519 key published at /.well-known/keys.json.
     """
     import hashlib
 
