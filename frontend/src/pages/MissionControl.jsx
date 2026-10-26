@@ -5,9 +5,11 @@ import {
   Activity,
   AlertTriangle,
   Battery,
+  Brain,
   CheckCircle2,
   ClipboardCheck,
   Cpu,
+  ExternalLink,
   FileText,
   Gauge,
   Map,
@@ -164,6 +166,7 @@ function missionToPlan(mission, targetZone, robots, drones, sensors, geofences, 
     timeline: mission.timeline || [],
     directives: mission.directives || [],
     evidence: mission.evidence || {},
+    aiRecommendation: mission.ai_recommendation || null,
   };
 }
 
@@ -847,9 +850,10 @@ function MissionTabs({ plan, mission }) {
 
   return (
     <Tabs defaultValue="flight" className="h-full" data-testid="mission-plan-tabs">
-      <TabsList className="grid w-full grid-cols-5">
+      <TabsList className="grid w-full grid-cols-7">
         <TabsTrigger value="flight" data-testid="mission-tab-flight"><Route className="mr-1 h-3.5 w-3.5" />Flight</TabsTrigger>
         <TabsTrigger value="risk" data-testid="mission-tab-risk"><AlertTriangle className="mr-1 h-3.5 w-3.5" />Risk</TabsTrigger>
+        <TabsTrigger value="ai" data-testid="mission-tab-ai"><Brain className="mr-1 h-3.5 w-3.5" />AI</TabsTrigger>
         <TabsTrigger value="forecast" data-testid="mission-tab-forecast"><Activity className="mr-1 h-3.5 w-3.5" />Forecast</TabsTrigger>
         <TabsTrigger value="timeline" data-testid="mission-tab-timeline"><Timer className="mr-1 h-3.5 w-3.5" />Timeline</TabsTrigger>
         <TabsTrigger value="audit" data-testid="mission-tab-audit"><ClipboardCheck className="mr-1 h-3.5 w-3.5" />Audit</TabsTrigger>
@@ -881,6 +885,93 @@ function MissionTabs({ plan, mission }) {
             <p className="text-sm">{directive}</p>
           </div>
         ))}
+      </TabsContent>
+
+      <TabsContent value="ai" className="mt-4 space-y-3" data-testid="ai-tab-content">
+        {plan.aiRecommendation ? (
+          <div className="space-y-3">
+            <div className={`rounded-sm border p-4 ${
+              plan.aiRecommendation.recommendation === "go"
+                ? "border-green-300 bg-green-50 dark:bg-green-950/20"
+                : plan.aiRecommendation.recommendation === "hold"
+                ? "border-amber-300 bg-amber-50 dark:bg-amber-950/20"
+                : "border-red-300 bg-red-50 dark:bg-red-950/20"
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-[0.15em] text-muted-foreground">AI verdict</span>
+                <div className="flex gap-1.5">
+                  <Badge className={
+                    plan.aiRecommendation.recommendation === "go"
+                      ? "bg-green-600 text-white"
+                      : plan.aiRecommendation.recommendation === "hold"
+                      ? "bg-amber-500 text-white"
+                      : "bg-red-600 text-white"
+                  }>
+                    {(plan.aiRecommendation.recommendation || "go").toUpperCase()}
+                  </Badge>
+                  <Badge variant="outline" className="text-[10px]">
+                    urgency: {plan.aiRecommendation.urgency || "medium"}
+                  </Badge>
+                </div>
+              </div>
+              <p className="mt-2 text-sm">{plan.aiRecommendation.rationale}</p>
+              {plan.aiRecommendation.llm_model && (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Model: {plan.aiRecommendation.llm_model}
+                </p>
+              )}
+            </div>
+
+            {Array.isArray(plan.aiRecommendation.key_risks) && plan.aiRecommendation.key_risks.length > 0 && (
+              <div className="rounded-sm border border-border p-3 space-y-1.5">
+                <p className="text-xs uppercase tracking-[0.15em] text-muted-foreground">Key risks</p>
+                {plan.aiRecommendation.key_risks.map((risk, i) => (
+                  <div key={i} className="flex gap-2 text-sm">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                    <span>{risk}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {Array.isArray(plan.aiRecommendation.success_criteria) && plan.aiRecommendation.success_criteria.length > 0 && (
+              <div className="rounded-sm border border-border p-3 space-y-1.5">
+                <p className="text-xs uppercase tracking-[0.15em] text-muted-foreground">Success criteria</p>
+                {plan.aiRecommendation.success_criteria.map((crit, i) => (
+                  <div key={i} className="flex gap-2 text-sm">
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" />
+                    <span>{crit}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-sm border border-dashed border-border p-4 text-sm text-muted-foreground">
+            AI recommendation appears here after mission generation.
+          </div>
+        )}
+
+        {/* Outcome on chain — shown when mission is completed */}
+        {mission?.outcome_observation_id && (
+          <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 flex items-start gap-2">
+            <Shield className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div className="text-sm space-y-0.5">
+              <p className="font-medium">Mission outcome signed on-chain</p>
+              <a
+                href={`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001'}/api/observations/${mission.outcome_observation_id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-primary underline font-mono break-all"
+              >
+                {mission.outcome_observation_id}
+              </a>
+              <p className="text-xs text-muted-foreground">
+                View verification result or visit the <a href="/gaia-prime" className="underline text-primary">Gaia Prime</a> auditor page.
+              </p>
+            </div>
+          </div>
+        )}
       </TabsContent>
 
       <TabsContent value="forecast" className="mt-4 space-y-3">

@@ -1269,3 +1269,78 @@ def test_cooking_reading_rejects_unauthenticated(anon_api):
     )
     assert r.status_code == 401
 
+
+
+# ------------------- AI Mission Planning Loop --------------------------------
+
+def test_mission_generate_includes_ai_recommendation(api, auth_headers, seeded):
+    """Generated mission always carries an ai_recommendation block."""
+    r = api.post(
+        "/missions/generate",
+        json={"mission_type": "patrol", "max_drones": 2, "max_robots": 1},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rec = body.get("ai_recommendation")
+    assert rec is not None, "ai_recommendation must be present"
+    assert rec.get("recommendation") in {"go", "hold", "abort"}
+    assert rec.get("urgency") in {"low", "medium", "high", "critical"}
+    assert isinstance(rec.get("key_risks"), list)
+    assert isinstance(rec.get("success_criteria"), list)
+
+
+def test_mission_complete_signs_outcome_to_chain(api, auth_headers, unique_name):
+    """Complete a mission end-to-end; outcome must be signed as an observation."""
+    mission, zone_id, drone_ids = _create_mission_ready_fixture(
+        api, unique_name, auth_headers, suffix="-chain"
+    )
+    mission_id = mission["id"]
+
+    # Authorize (fixture ensures go_score >= MISSION_GO_SCORE_FLOOR)
+    auth_r = api.post(f"/missions/{mission_id}/authorize", headers=auth_headers)
+    assert auth_r.status_code == 200, auth_r.text
+
+    # Complete
+    comp = api.post(f"/missions/{mission_id}/complete", headers=auth_headers)
+    assert comp.status_code == 200, comp.text
+    body = comp.json()
+    obs_id = body.get("outcome_observation_id")
+    assert obs_id, "completed mission must carry outcome_observation_id"
+
+    # Verify the observation is on-chain and its signature is valid
+    obs = api.get(f"/observations/{obs_id}")
+    assert obs.status_code == 200
+    obs_body = obs.json()
+    assert obs_body["verification"]["valid"] is True
+    assert obs_body["source_type"] == "mission_outcome"
+    assert obs_body["source_id"] == mission_id
+    assert obs_body["payload"]["mission_id"] == mission_id
+
+    for drone_id in drone_ids:
+        api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{zone_id}")
+
+
+def test_ai_recommend_returns_ranked_zones(api, auth_headers, seeded):
+    """ai-recommend returns a list of zone recommendations."""
+    r = api.post(
+        "/missions/ai-recommend",
+        json={"question": "Two robots available for 3 hours"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "recommendations" in body
+    recs = body["recommendations"]
+    assert isinstance(recs, list)
+    if recs:
+        first = recs[0]
+        assert "zone_id" in first or "zone_name" in first
+        assert first.get("recommended_mission_type") in {"patrol", "inspect", "intervene"}
+        assert first.get("urgency") in {"low", "medium", "high", "critical"}
+
+
+def test_ai_recommend_rejects_unauthenticated(anon_api):
+    r = anon_api.post("/missions/ai-recommend", json={})
+    assert r.status_code == 401
