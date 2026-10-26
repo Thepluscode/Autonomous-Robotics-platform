@@ -1292,7 +1292,7 @@ def test_mission_generate_includes_ai_recommendation(api, auth_headers, seeded):
 
 def test_mission_complete_signs_outcome_to_chain(api, auth_headers, unique_name):
     """Complete a mission end-to-end; outcome must be signed as an observation."""
-    mission, _zone_id, _drone_ids = _create_mission_ready_fixture(
+    mission, zone_id, drone_ids = _create_mission_ready_fixture(
         api, unique_name, auth_headers, suffix="-chain"
     )
     mission_id = mission["id"]
@@ -1313,6 +1313,10 @@ def test_mission_complete_signs_outcome_to_chain(api, auth_headers, unique_name)
     assert obs.status_code == 200
     assert obs.json()["verification"]["valid"] is True
     assert obs.json()["source_type"] == "mission_outcome"
+
+    for drone_id in drone_ids:
+        api.delete(f"/drones/{drone_id}")
+    api.delete(f"/zones/{zone_id}")
 
 
 def test_ai_recommend_returns_ranked_zones(api, auth_headers, seeded):
