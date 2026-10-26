@@ -2446,7 +2446,10 @@ async def create_zone(zone_data: ZoneCreate, user: dict = Depends(require_role([
 
 @api_router.put("/zones/{zone_id}", response_model=Zone)
 async def update_zone(zone_id: str, update_data: ZoneUpdate, user: dict = Depends(require_role(["admin", "field_operator"]))):
-    update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    # exclude_unset=True ensures only explicitly-sent fields are included,
+    # allowing species_confidence_threshold: null to clear the threshold gate.
+    raw = update_data.model_dump(exclude_unset=True)
+    update_dict = {k: v for k, v in raw.items() if v is not None or k == "species_confidence_threshold"}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
     await db.zones.update_one({"id": zone_id}, {"$set": update_dict})
@@ -2851,7 +2854,7 @@ async def _identify_species_from_image(
     if requires_review and zone_id:
         try:
             zone_name = (zone_doc or {}).get("name", zone_id)
-            alert = AlertCreate(
+            alert = Alert(
                 title=f"Species ID review required: {identification['species_name']}",
                 message=(
                     f"Zone '{zone_name}': {identification['species_name']} identified at "
