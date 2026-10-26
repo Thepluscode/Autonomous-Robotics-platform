@@ -3292,7 +3292,8 @@ def _estimate_zone_tco2e(zone_doc: dict, avg_biodiversity: Optional[float]) -> f
     improvement = max(0.0, avg_biodiversity - baseline)
     radius_km = float(zone_doc.get("radius_km") or _DEFAULT_ZONE_RADIUS_KM)
     area_ha = 3.14159 * (radius_km * 1000 / 100) ** 2  # crude circular approximation
-    return round(improvement * area_ha * _TCO2E_PER_HECTARE_PER_UNIT_BIODIVERSITY, 2)
+    estimate = round(improvement * area_ha * _TCO2E_PER_HECTARE_PER_UNIT_BIODIVERSITY, 2)
+    return estimate if math.isfinite(estimate) else 0.0
 
 
 @api_router.post("/credits/generate", status_code=201)
@@ -3328,6 +3329,14 @@ async def generate_credit_report(
     zone_docs = await zones_cursor.to_list(_zone_cap + 1)
     if not zone_docs:
         raise HTTPException(status_code=404, detail="No zones found matching the request.")
+    if req.zone_ids:
+        found_ids = {z.get("id") for z in zone_docs}
+        missing = [zid for zid in dict.fromkeys(req.zone_ids) if zid not in found_ids]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Zones not found: {', '.join(missing)}",
+            )
     if len(zone_docs) > _zone_cap:
         raise HTTPException(
             status_code=422,
