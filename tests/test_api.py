@@ -1269,3 +1269,85 @@ def test_cooking_reading_rejects_unauthenticated(anon_api):
     )
     assert r.status_code == 401
 
+
+# --------- Per-zone species ID confidence thresholds (bet 4) ------------------
+
+def test_zone_species_confidence_threshold_roundtrips(api, unique_name, auth_headers):
+    """Zone create/update round-trips the species_confidence_threshold field."""
+    payload = {
+        "name": unique_name,
+        "zone_type": "grassland",
+        "species_confidence_threshold": 0.85,
+    }
+    created = api.post("/zones", json=payload, headers=auth_headers)
+    assert created.status_code == 200, created.text
+    zone_id = created.json()["id"]
+    assert created.json().get("species_confidence_threshold") == 0.85
+
+    # Update to a different threshold
+    updated = api.put(f"/zones/{zone_id}", json={"species_confidence_threshold": 0.70}, headers=auth_headers)
+    assert updated.status_code == 200, updated.text
+    assert updated.json().get("species_confidence_threshold") == 0.70
+
+    # Clear the threshold
+    cleared = api.put(f"/zones/{zone_id}", json={"species_confidence_threshold": None}, headers=auth_headers)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json().get("species_confidence_threshold") is None
+
+    api.delete(f"/zones/{zone_id}", headers=auth_headers)
+
+
+def test_species_identify_requires_review_when_below_threshold(api, unique_name, auth_headers):
+    """Setting a very high threshold (0.99) guarantees requires_review=True
+    since the deterministic classifier's top confidence is ≤ 0.94."""
+    # Create a zone with a threshold that the deterministic classifier can never meet.
+    zone = api.post("/zones", json={"name": unique_name, "zone_type": "forest", "species_confidence_threshold": 0.99}, headers=auth_headers)
+    assert zone.status_code == 200, zone.text
+    zone_id = zone.json()["id"]
+
+    r = api.post(f"/species/identify?image_url=https://example.com/threshold-test.jpg&zone_id={zone_id}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body.get("requires_review") is True, "confidence 0.99 threshold must trigger requires_review"
+    assert body.get("review_reason"), "review_reason must be populated"
+    assert "0.99" in body["review_reason"] or "threshold" in body["review_reason"].lower()
+    assert body.get("confidence_threshold") == 0.99
+
+    # An alert should have been created for this identification.
+    alerts = api.get("/alerts", headers=auth_headers).json()
+    species_alerts = [a for a in alerts if a.get("alert_type") == "species" and a.get("zone_id") == zone_id]
+    assert species_alerts, "a review alert must be created when confidence is below threshold"
+    assert "review" in species_alerts[0]["title"].lower() or "species" in species_alerts[0]["title"].lower()
+
+    api.delete(f"/zones/{zone_id}", headers=auth_headers)
+
+
+def test_species_identify_no_review_flag_without_threshold(api, unique_name, auth_headers):
+    """Zone without a confidence threshold never sets requires_review."""
+    zone = api.post("/zones", json={"name": unique_name, "zone_type": "forest"}, headers=auth_headers)
+    assert zone.status_code == 200, zone.text
+    zone_id = zone.json()["id"]
+
+    r = api.post(f"/species/identify?image_url=https://example.com/no-gate.jpg&zone_id={zone_id}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body.get("requires_review") is False or body.get("requires_review") is None
+    assert body.get("review_reason") is None
+
+    api.delete(f"/zones/{zone_id}", headers=auth_headers)
+
+
+def test_species_identify_no_review_when_threshold_is_zero(api, unique_name, auth_headers):
+    """Threshold=0.0 means every result passes (nothing can be below 0)."""
+    zone = api.post("/zones", json={"name": unique_name, "zone_type": "wetland", "species_confidence_threshold": 0.0}, headers=auth_headers)
+    assert zone.status_code == 200, zone.text
+    zone_id = zone.json()["id"]
+
+    r = api.post(f"/species/identify?image_url=https://example.com/zero-gate.jpg&zone_id={zone_id}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.json().get("requires_review") is False or r.json().get("requires_review") is None
+
+    api.delete(f"/zones/{zone_id}", headers=auth_headers)
+

@@ -202,6 +202,11 @@ export default function SpeciesIdentification() {
                     <p className="font-heading font-semibold text-lg">{result.species_name}</p>
                     {result.scientific_name && <p className="text-sm text-muted-foreground italic">{result.scientific_name}</p>}
                     <Badge variant={result.confidence > 0.7 ? "success" : "warning"}>Confidence: {Math.round((result.confidence || 0) * 100)}%</Badge>
+                    {result.requires_review && (
+                      <Badge variant="destructive" className="text-[10px]" title={result.review_reason} data-testid="requires-review-badge">
+                        ⚠ Review required
+                      </Badge>
+                    )}
                   </div>
                 </div>
                 {result.ai_analysis && <div className="p-3 rounded-sm bg-muted/50 border border-border"><p className="text-sm">{result.ai_analysis}</p></div>}
@@ -228,7 +233,12 @@ export default function SpeciesIdentification() {
                   {item.image_url && <img src={item.image_url} alt="" className="w-12 h-12 object-cover rounded-sm" />}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium truncate">{item.species_name}</p>
-                    <p className="text-xs text-muted-foreground">{formatDateTime(item.created_at)}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                      <p className="text-xs text-muted-foreground">{formatDateTime(item.created_at)}</p>
+                      {item.requires_review && (
+                        <span className="text-[10px] text-amber-600 font-medium" title={item.review_reason} data-testid="history-review-flag">⚠ Review</span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}

@@ -31,7 +31,7 @@ export default function ZoneManagement() {
   const [error, setError] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editZone, setEditZone] = useState(null);
-  const [form, setForm] = useState({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5 });
+  const [form, setForm] = useState({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5, species_confidence_threshold: "" });
 
   const fetchData = async () => {
     setLoading(true);
@@ -48,9 +48,16 @@ export default function ZoneManagement() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // Parse the threshold field: empty string → null (no gate), else float.
+  const parseThreshold = (v) => {
+    if (v === "" || v == null) return null;
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+  };
+
   const handleCreate = async () => {
     try {
-      await zoneAPI.create(form);
+      await zoneAPI.create({ ...form, species_confidence_threshold: parseThreshold(form.species_confidence_threshold) });
       setCreateOpen(false);
       resetForm();
       toast.success("Zone created", { description: form.name });
@@ -64,7 +71,7 @@ export default function ZoneManagement() {
 
   const handleUpdate = async () => {
     try {
-      await zoneAPI.update(editZone.id, form);
+      await zoneAPI.update(editZone.id, { ...form, species_confidence_threshold: parseThreshold(form.species_confidence_threshold) });
       setEditZone(null);
       resetForm();
       toast.success("Zone updated", { description: form.name });
@@ -89,10 +96,10 @@ export default function ZoneManagement() {
     }
   };
 
-  const resetForm = () => setForm({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5 });
+  const resetForm = () => setForm({ name: "", zone_type: "forest", priority: "medium", description: "", center_lat: 0, center_lng: 0, radius_km: 5, biodiversity_index: 0.5, soil_health: 0.5, predator_prey_balance: 0.5, vegetation_coverage: 0.5, species_confidence_threshold: "" });
 
   const openEdit = (zone) => {
-    setForm({ name: zone.name, zone_type: zone.zone_type, priority: zone.priority, description: zone.description || "", center_lat: zone.center_lat, center_lng: zone.center_lng, radius_km: zone.radius_km, biodiversity_index: zone.biodiversity_index, soil_health: zone.soil_health, predator_prey_balance: zone.predator_prey_balance, vegetation_coverage: zone.vegetation_coverage });
+    setForm({ name: zone.name, zone_type: zone.zone_type, priority: zone.priority, description: zone.description || "", center_lat: zone.center_lat, center_lng: zone.center_lng, radius_km: zone.radius_km, biodiversity_index: zone.biodiversity_index, soil_health: zone.soil_health, predator_prey_balance: zone.predator_prey_balance, vegetation_coverage: zone.vegetation_coverage, species_confidence_threshold: zone.species_confidence_threshold != null ? String(zone.species_confidence_threshold) : "" });
     setEditZone(zone);
   };
 
@@ -124,6 +131,27 @@ export default function ZoneManagement() {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2"><Label>Latitude</Label><Input type="number" step="0.01" value={form.center_lat} onChange={(e) => setForm({ ...form, center_lat: parseFloat(e.target.value) || 0 })} /></div>
           <div className="space-y-2"><Label>Longitude</Label><Input type="number" step="0.01" value={form.center_lng} onChange={(e) => setForm({ ...form, center_lng: parseFloat(e.target.value) || 0 })} /></div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="species-confidence-threshold">
+            Species ID confidence threshold
+            <span className="ml-1 text-muted-foreground font-normal">(0–1, optional)</span>
+          </Label>
+          <Input
+            id="species-confidence-threshold"
+            type="number"
+            step="0.05"
+            min="0"
+            max="1"
+            placeholder="e.g. 0.80 for large carnivores"
+            value={form.species_confidence_threshold}
+            onChange={(e) => setForm({ ...form, species_confidence_threshold: e.target.value })}
+            data-testid="species-confidence-threshold-input"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Identifications below this confidence trigger a review alert.
+            Leave blank for no gate. Wolves and large carnivores: 0.85+. Plants/insects: 0.60.
+          </p>
         </div>
       </div>
       <DialogFooter><Button onClick={onSubmit} disabled={!form.name}>Save</Button></DialogFooter>
@@ -173,9 +201,14 @@ export default function ZoneManagement() {
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => handleDelete(zone.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="text-[10px]">{zone.zone_type}</Badge>
                   <Badge className={cn("text-[10px]", zone.priority === "critical" ? "bg-red-500/15 text-red-700 border-red-200" : zone.priority === "high" ? "bg-orange-500/15 text-orange-700 border-orange-200" : "bg-blue-500/15 text-blue-700 border-blue-200")}>{zone.priority}</Badge>
+                  {zone.species_confidence_threshold != null && (
+                    <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700" title="Species ID confidence gate active" data-testid="threshold-badge">
+                      ID ≥{Math.round(zone.species_confidence_threshold * 100)}%
+                    </Badge>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-2">

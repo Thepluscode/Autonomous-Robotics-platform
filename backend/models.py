@@ -149,6 +149,11 @@ class ZoneBase(BaseModel):
     soil_health: float = 0.5
     predator_prey_balance: float = 0.5
     vegetation_coverage: float = 0.5
+    # Per-zone species ID confidence gate. When set, identifications whose
+    # top-candidate confidence falls below this threshold are flagged
+    # requires_review=True and an alert is auto-created. None = no gate.
+    # Wolves/large carnivores may warrant 0.85+; insects/plants 0.60 is fine.
+    species_confidence_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class Zone(ZoneBase):
@@ -170,6 +175,7 @@ class ZoneUpdate(BaseModel):
     soil_health: Optional[float] = None
     predator_prey_balance: Optional[float] = None
     vegetation_coverage: Optional[float] = None
+    species_confidence_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class SensorBase(BaseModel):

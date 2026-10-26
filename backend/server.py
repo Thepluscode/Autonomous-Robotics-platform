@@ -2446,7 +2446,10 @@ async def create_zone(zone_data: ZoneCreate, user: dict = Depends(require_role([
 
 @api_router.put("/zones/{zone_id}", response_model=Zone)
 async def update_zone(zone_id: str, update_data: ZoneUpdate, user: dict = Depends(require_role(["admin", "field_operator"]))):
-    update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    # exclude_unset=True ensures only explicitly-sent fields are included,
+    # allowing species_confidence_threshold: null to clear the threshold gate.
+    raw = update_data.model_dump(exclude_unset=True)
+    update_dict = {k: v for k, v in raw.items() if v is not None or k == "species_confidence_threshold"}
     if not update_dict:
         raise HTTPException(status_code=400, detail="No update data provided")
     await db.zones.update_one({"id": zone_id}, {"$set": update_dict})
@@ -2761,11 +2764,12 @@ async def _identify_species_from_image(
     observation so 'rare species detected at zone X by drone Y' is
     cryptographically defensible.
     """
-    # Resolve the zone's biome so the classifier can apply the right priors.
+    # Resolve the zone's biome and per-zone confidence threshold.
     zone_doc = None
     if zone_id:
         zone_doc = await db.zones.find_one({"id": zone_id}, {"_id": 0})
     biome = (zone_doc or {}).get("zone_type")
+    confidence_threshold = (zone_doc or {}).get("species_confidence_threshold")
 
     # Recover the image bytes used by the classifier. For data-URL uploads
     # the bytes are inside image_ref; for plain URLs we hash the URL string
@@ -2795,6 +2799,28 @@ async def _identify_species_from_image(
         }
 
     top = result["top"]
+    confidence_val = float(top.get("confidence") or 0.0)
+
+    # Per-zone confidence gate: flag the identification for human review if
+    # the top-candidate confidence falls below the zone's threshold. The
+    # threshold is configurable per zone so high-stakes species (large
+    # carnivores, critically endangered) can demand higher certainty than
+    # plants or insects.
+    requires_review = False
+    review_reason: Optional[str] = None
+    if confidence_threshold is not None:
+        try:
+            threshold_val = float(confidence_threshold)
+            if confidence_val < threshold_val:
+                requires_review = True
+                review_reason = (
+                    f"Confidence {confidence_val:.2f} is below the zone threshold "
+                    f"{threshold_val:.2f}. Manual verification required before "
+                    "crediting this sighting."
+                )
+        except (TypeError, ValueError):
+            pass
+
     identification_id = str(uuid.uuid4())
     identification = {
         "id": identification_id,
@@ -2805,19 +2831,47 @@ async def _identify_species_from_image(
         "zone_id": zone_id,
         "species_name": str(top.get("species_name") or "Unknown"),
         "scientific_name": str(top.get("scientific_name") or ""),
-        "confidence": float(top.get("confidence") or 0.0),
+        "confidence": confidence_val,
         "conservation_status": str(top.get("conservation_status") or "DD"),
         "candidates": result.get("candidates", []),
         "method": result.get("method"),
         "biome": result.get("biome"),
         "input_hash": result.get("input_hash"),
+        "requires_review": requires_review,
+        "review_reason": review_reason,
+        "confidence_threshold": confidence_threshold,
         "ai_analysis": (
             f"Identified {top.get('species_name')} ({top.get('scientific_name')}) at "
-            f"{int((top.get('confidence') or 0.0) * 100)}% confidence in {result.get('biome')} biome "
+            f"{int(confidence_val * 100)}% confidence in {result.get('biome')} biome "
             f"via {result.get('method')}."
+            + (f" ⚠ Review required: {review_reason}" if requires_review else "")
         ),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    # Auto-alert when confidence is below the zone's threshold: operators see
+    # these in the alerts panel without having to poll the ID history.
+    if requires_review and zone_id:
+        try:
+            zone_name = (zone_doc or {}).get("name", zone_id)
+            alert = Alert(
+                title=f"Species ID review required: {identification['species_name']}",
+                message=(
+                    f"Zone '{zone_name}': {identification['species_name']} identified at "
+                    f"{int(confidence_val * 100)}% confidence, below the zone threshold "
+                    f"of {int(float(confidence_threshold) * 100)}%. "
+                    "A field scientist should verify this sighting before it is credited."
+                ),
+                severity="warning",
+                zone_id=zone_id,
+                alert_type="species",
+            )
+            alert_doc = alert.model_dump()
+            alert_doc["created_at"] = alert_doc["created_at"].isoformat()
+            alert_doc["species_identification_id"] = identification_id
+            await db.alerts.insert_one(alert_doc)
+        except Exception as exc:
+            logging.warning("species_id: failed to create review alert: %s", exc)
 
     # Provenance: every identification is a signed observation. This is
     # what makes "rare species detected" cryptographically defensible —
