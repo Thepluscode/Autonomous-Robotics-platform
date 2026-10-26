@@ -850,7 +850,7 @@ function MissionTabs({ plan, mission }) {
 
   return (
     <Tabs defaultValue="flight" className="h-full" data-testid="mission-plan-tabs">
-      <TabsList className="grid w-full grid-cols-6">
+      <TabsList className="grid w-full grid-cols-7">
         <TabsTrigger value="flight" data-testid="mission-tab-flight"><Route className="mr-1 h-3.5 w-3.5" />Flight</TabsTrigger>
         <TabsTrigger value="risk" data-testid="mission-tab-risk"><AlertTriangle className="mr-1 h-3.5 w-3.5" />Risk</TabsTrigger>
         <TabsTrigger value="ai" data-testid="mission-tab-ai"><Brain className="mr-1 h-3.5 w-3.5" />AI</TabsTrigger>
@@ -922,7 +922,7 @@ function MissionTabs({ plan, mission }) {
               )}
             </div>
 
-            {plan.aiRecommendation.key_risks?.length > 0 && (
+            {Array.isArray(plan.aiRecommendation.key_risks) && plan.aiRecommendation.key_risks.length > 0 && (
               <div className="rounded-sm border border-border p-3 space-y-1.5">
                 <p className="text-xs uppercase tracking-[0.15em] text-muted-foreground">Key risks</p>
                 {plan.aiRecommendation.key_risks.map((risk, i) => (
@@ -934,7 +934,7 @@ function MissionTabs({ plan, mission }) {
               </div>
             )}
 
-            {plan.aiRecommendation.success_criteria?.length > 0 && (
+            {Array.isArray(plan.aiRecommendation.success_criteria) && plan.aiRecommendation.success_criteria.length > 0 && (
               <div className="rounded-sm border border-border p-3 space-y-1.5">
                 <p className="text-xs uppercase tracking-[0.15em] text-muted-foreground">Success criteria</p>
                 {plan.aiRecommendation.success_criteria.map((crit, i) => (
@@ -958,12 +958,16 @@ function MissionTabs({ plan, mission }) {
             <Shield className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             <div className="text-sm space-y-0.5">
               <p className="font-medium">Mission outcome signed on-chain</p>
-              <p className="text-xs text-muted-foreground font-mono break-all">
+              <a
+                href={`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001'}/api/observations/${mission.outcome_observation_id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-primary underline font-mono break-all"
+              >
                 {mission.outcome_observation_id}
-              </p>
+              </a>
               <p className="text-xs text-muted-foreground">
-                Verify at <code className="text-[10px]">POST /api/observations/verify</code>
-                {" "}or on the <a href="/gaia-prime" className="underline text-primary">Gaia Prime</a> auditor page.
+                View verification result or visit the <a href="/gaia-prime" className="underline text-primary">Gaia Prime</a> auditor page.
               </p>
             </div>
           </div>

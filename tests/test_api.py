@@ -1311,8 +1311,11 @@ def test_mission_complete_signs_outcome_to_chain(api, auth_headers, unique_name)
     # Verify the observation is on-chain and its signature is valid
     obs = api.get(f"/observations/{obs_id}")
     assert obs.status_code == 200
-    assert obs.json()["verification"]["valid"] is True
-    assert obs.json()["source_type"] == "mission_outcome"
+    obs_body = obs.json()
+    assert obs_body["verification"]["valid"] is True
+    assert obs_body["source_type"] == "mission_outcome"
+    assert obs_body["source_id"] == mission_id
+    assert obs_body["payload"]["mission_id"] == mission_id
 
     for drone_id in drone_ids:
         api.delete(f"/drones/{drone_id}")

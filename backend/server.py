@@ -2128,6 +2128,19 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
                 if text.startswith("json"):
                     text = text[4:].strip()
             parsed = _json.loads(text)
+            _VALID_REC = {"go", "hold", "abort"}
+            _VALID_URGENCY = {"low", "medium", "high", "critical"}
+            _VALID_MTYPE = {"patrol", "inspect", "intervene"}
+            if parsed.get("recommendation") not in _VALID_REC:
+                raise ValueError(f"LLM recommendation {parsed.get('recommendation')!r} not in {_VALID_REC}")
+            if parsed.get("urgency") not in _VALID_URGENCY:
+                raise ValueError(f"LLM urgency {parsed.get('urgency')!r} not in {_VALID_URGENCY}")
+            if parsed.get("intervention_type") not in _VALID_MTYPE:
+                raise ValueError(f"LLM intervention_type {parsed.get('intervention_type')!r} not in {_VALID_MTYPE}")
+            if not isinstance(parsed.get("key_risks"), list):
+                raise ValueError("LLM key_risks is not a list")
+            if not isinstance(parsed.get("success_criteria"), list):
+                raise ValueError("LLM success_criteria is not a list")
             ai_recommendation = {
                 "recommendation": parsed.get("recommendation", "go"),
                 "intervention_type": parsed.get("intervention_type", req.mission_type),
@@ -2448,11 +2461,20 @@ async def ai_recommend_mission(request: Request, body: Optional[dict] = None):
             if text.startswith("json"):
                 text = text[4:].strip()
         parsed = _json.loads(text)
-        # Re-attach full zone_id from zone_docs by matching the prefix
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("LLM returned no recommendations")
         id_map = {z.get("id", "")[:8]: z.get("id") for z in zone_docs}
         for item in parsed:
-            prefix = (item.get("zone_id") or "")[:8]
-            item["zone_id"] = id_map.get(prefix, item.get("zone_id"))
+            if not isinstance(item, dict):
+                raise ValueError("LLM item is not an object")
+            full_id = id_map.get((item.get("zone_id") or "")[:8])
+            if not full_id:
+                raise ValueError(f"LLM returned unknown zone_id {item.get('zone_id')!r}")
+            if item.get("recommended_mission_type") not in {"patrol", "inspect", "intervene"}:
+                raise ValueError(f"invalid recommended_mission_type {item.get('recommended_mission_type')!r}")
+            if item.get("urgency") not in {"low", "medium", "high", "critical"}:
+                raise ValueError(f"invalid urgency {item.get('urgency')!r}")
+            item["zone_id"] = full_id
         ranked = parsed
         llm_model_used = os.environ.get("LLM_MODEL") or os.environ.get("LLM_PROVIDER", "openai")
     except Exception as _exc:
