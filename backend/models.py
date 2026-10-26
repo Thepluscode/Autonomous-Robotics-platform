@@ -713,11 +713,14 @@ class CreditReport(BaseModel):
     # Verification instructions
     verification_url: str = "/api/observations/verify"
     verification_note: str = (
-        "This report does not provide a complete public retrieval path for every source "
-        "observation. Public observation endpoints may return only the newest 1000 "
-        "records, may include observations outside the report period, and redact "
-        "payloads. Auditors cannot use them to verify every source observation or "
-        "re-derive the report root. To independently verify source observations, call "
-        "GET /api/zones/{zone_id}/attestation for each zone in this report. "
-        "The report summary itself is a signed observation (report_observation_id)."
+        "This report does not embed source observations and does not provide a complete "
+        "public retrieval path for re-deriving its attestation roots. "
+        "GET /api/zones/{zone_id}/attestation returns a recent window of signed "
+        "observation hashes (capped at 168 h / 7 days) without payloads; it cannot "
+        "cover the full source set for any report spanning a longer period or requiring "
+        "payload content. Auditors who need full evidence should request a signed "
+        "evidence export from the platform operator. "
+        "The report summary itself is a signed observation (report_observation_id) "
+        "verifiable via POST /api/observations/verify using the Ed25519 key at "
+        "/.well-known/keys.json."
     )
