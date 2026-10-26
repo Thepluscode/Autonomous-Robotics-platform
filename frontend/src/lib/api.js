@@ -252,6 +252,13 @@ export const provenanceAPI = {
   getStats: (hours = 168) => api.get(`/public/provenance/stats?hours=${hours}`),
 };
 
+// ======================== FEDERATED LEARNING ========================
+export const federatedAPI = {
+  runRound: () => api.post("/zones/federated-round"),
+  listRounds: (limit = 20) => api.get(`/zones/federated-rounds?limit=${limit}`),
+  getRound: (id) => api.get(`/zones/federated-rounds/${id}`),
+};
+
 // ======================== SEED ========================
 export const seedAPI = {
   seed: () => api.post("/seed"),

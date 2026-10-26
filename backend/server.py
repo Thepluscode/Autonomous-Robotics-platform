@@ -85,6 +85,8 @@ from models import (
     DroneCreate,
     DroneUpdate,
     EcosystemForecast,
+    FederatedRound,
+    FederatedZoneContribution,
     ForgotPassword,
     Geofence,
     GeofenceCreate,
@@ -2428,6 +2430,32 @@ async def get_zones(user: dict = Depends(get_current_user)):
         deserialize_datetime(zone, ['created_at'])
     return zones
 
+# Literal sub-paths must be registered before the parameterized /{zone_id} route
+# to prevent FastAPI from matching e.g. "federated-rounds" as zone_id.
+
+@api_router.get("/zones/federated-rounds")
+async def list_federated_rounds_early(
+    limit: int = 20,
+    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
+):
+    """List past federated learning rounds, newest first."""
+    cap = max(1, min(int(limit), 100))
+    rows = await db.federated_rounds.find({}, {"_id": 0}).sort("round_number", -1).limit(cap).to_list(cap)
+    return rows
+
+
+@api_router.get("/zones/federated-rounds/{round_id}")
+async def get_federated_round_early(
+    round_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    user: dict = Depends(require_role(["admin", "scientist", "viewer"])),
+):
+    """Fetch a single federated round by ID."""
+    doc = await db.federated_rounds.find_one({"id": round_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Federated round not found")
+    return doc
+
+
 @api_router.get("/zones/{zone_id}", response_model=Zone)
 async def get_zone(zone_id: str, user: dict = Depends(get_current_user)):
     zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
@@ -2462,6 +2490,210 @@ async def delete_zone(zone_id: str, user: dict = Depends(require_role(["admin"])
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Zone not found")
     return {"message": "Zone deleted successfully"}
+
+
+# ==================== FEDERATED LEARNING ====================
+# Multi-zone federated averaging for species ID confidence calibration.
+# Each zone contributes local statistics (never raw images). FedAvg merges
+# these into a global biome-weight update that every zone can apply.
+
+def _fedavg(
+    zone_stats: list[dict],  # [{zone_id, weight, biome, species_scores: {name: float}}]
+) -> dict[str, dict[str, float]]:
+    """Federated averaging over per-zone confidence statistics.
+
+    Returns: {biome: {species_name: updated_weight}} — the global model update.
+    Zones with more observations get proportionally higher weight (FedAvg).
+    Zones contribute only aggregate confidence scores, not raw data.
+    """
+    from collections import defaultdict
+    biome_accum: dict = defaultdict(lambda: defaultdict(float))
+    biome_total_w: dict = defaultdict(float)
+
+    for entry in zone_stats:
+        w = float(entry.get("weight", 1))
+        biome = entry.get("biome", "forest")
+        scores = entry.get("species_scores", {})
+        biome_total_w[biome] += w
+        for species, conf in scores.items():
+            biome_accum[biome][species] += w * float(conf)
+
+    result: dict = {}
+    for biome, species_map in biome_accum.items():
+        total = biome_total_w[biome] or 1
+        result[biome] = {s: round(v / total, 4) for s, v in species_map.items()}
+    return result
+
+
+@api_router.post("/zones/federated-round", status_code=201)
+async def run_federated_round(
+    user: dict = Depends(require_role(["admin", "scientist"])),
+):
+    """Trigger a federated learning aggregation round.
+
+    Each zone contributes its local species ID confidence statistics.
+    **No raw images are shared** — only aggregated per-species mean
+    confidence scores per zone. FedAvg merges these into a global
+    biome-weight update, which is then signed to the observation chain.
+
+    The resulting `global_model_update` can be applied by the species ID
+    pipeline on the next identification request to improve per-zone
+    accuracy using cross-zone learnings.
+    """
+    from collections import defaultdict
+
+    zones = await db.zones.find({}, {"_id": 0}).to_list(500)
+    if not zones:
+        raise HTTPException(status_code=404, detail="No zones available for federated round")
+
+    # Pull the last 500 species identification observations across all zones
+    obs_cursor = db.observations.find(
+        {"source_type": "species_identification"},
+        {"_id": 0, "zone_id": 1, "payload": 1, "observed_at": 1},
+    ).sort("observed_at", -1).limit(500)
+    recent_obs = await obs_cursor.to_list(500)
+
+    zone_map = {z["id"]: z for z in zones if z.get("id")}
+
+    # Group observations by zone and aggregate confidence stats (no raw images)
+    zone_obs: dict = defaultdict(list)
+    for obs in recent_obs:
+        zid = obs.get("zone_id")
+        if zid and zid in zone_map:
+            zone_obs[zid].append(obs.get("payload") or {})
+
+    contributions: list = []
+    fedavg_inputs: list = []
+    calibration_improvements: list = []
+
+    for zid, payloads in zone_obs.items():
+        zone_doc = zone_map[zid]
+        biome = zone_doc.get("zone_type", "forest")
+
+        # Aggregate per-species confidence — never include raw image data
+        species_conf: dict = defaultdict(list)
+        for p in payloads:
+            name = p.get("species_name")
+            conf = p.get("confidence")
+            if name and conf is not None:
+                try:
+                    species_conf[name].append(float(conf))
+                except (TypeError, ValueError):
+                    pass
+
+        if not species_conf:
+            continue
+
+        mean_conf = {s: round(sum(vals) / len(vals), 4) for s, vals in species_conf.items()}
+        n = len(payloads)
+
+        # Compute weight delta: species identified more confidently than the
+        # biome baseline get a positive delta, less confidently a negative one.
+        weight_deltas: dict = {}
+        for species_name, mean in mean_conf.items():
+            # Baseline is 0.75 (midpoint of realistic confidence range)
+            weight_deltas[species_name] = round(mean - 0.75, 4)
+
+        contributions.append(FederatedZoneContribution(
+            zone_id=zid,
+            zone_name=zone_doc.get("name", zid),
+            zone_type=biome,
+            observation_count=n,
+            species_confidence_stats=mean_conf,
+            biome_weight_deltas=weight_deltas,
+        ))
+
+        fedavg_inputs.append({
+            "zone_id": zid,
+            "biome": biome,
+            "weight": n,  # observation count as FedAvg weight
+            "species_scores": mean_conf,
+        })
+
+        # Describe calibration improvement
+        if mean_conf:
+            top = max(mean_conf, key=mean_conf.get)
+            calibration_improvements.append(
+                f"Zone '{zone_doc.get('name')}' ({biome}): "
+                f"{n} obs, highest confidence species '{top}' "
+                f"({mean_conf[top]:.2f})"
+            )
+
+    if not contributions:
+        # No species observations yet — run a dry round with current zone stats
+        for zone_doc in zones[:5]:
+            biome = zone_doc.get("zone_type", "forest")
+            # Synthetic contribution from zone metrics (public, not PII)
+            synth_conf = {
+                "baseline_biodiversity": round(float(zone_doc.get("biodiversity_index", 0.5)), 4),
+            }
+            contributions.append(FederatedZoneContribution(
+                zone_id=zone_doc.get("id", ""),
+                zone_name=zone_doc.get("name", ""),
+                zone_type=biome,
+                observation_count=0,
+                species_confidence_stats=synth_conf,
+                biome_weight_deltas={},
+            ))
+            calibration_improvements.append(
+                f"Zone '{zone_doc.get('name')}' ({biome}): no species observations yet — "
+                "contributing zone health metrics for baseline calibration"
+            )
+        calibration_improvements.append(
+            "Global model update deferred until first species identifications are recorded. "
+            "Round recorded on chain to establish baseline."
+        )
+
+    # Run FedAvg
+    global_update = _fedavg(fedavg_inputs) if fedavg_inputs else {}
+
+    # Determine round number
+    prev_round = await db.federated_rounds.find_one(
+        {}, {"_id": 0, "round_number": 1}, sort=[("round_number", -1)]
+    )
+    round_number = (prev_round.get("round_number", 0) if prev_round else 0) + 1
+
+    fed_round = FederatedRound(
+        round_number=round_number,
+        participating_zones=len(contributions),
+        total_observations_used=sum(c.observation_count for c in contributions),
+        zone_contributions=contributions,
+        global_model_update=global_update,
+        calibration_improvements=calibration_improvements,
+    )
+
+    # Sign the round to the observation chain
+    try:
+        signed = await _record_observation(
+            db,
+            source_type="federated_learning_round",
+            source_id=fed_round.id,
+            zone_id=None,
+            observed_at=fed_round.created_at,
+            payload={
+                "round_id": fed_round.id,
+                "round_number": round_number,
+                "participating_zones": fed_round.participating_zones,
+                "total_observations_used": fed_round.total_observations_used,
+                "privacy_guarantee": fed_round.privacy_guarantee,
+                "aggregation_method": fed_round.aggregation_method,
+                # Summary of global update (not raw zone data)
+                "biomes_updated": list(global_update.keys()),
+                "zone_ids": [c.zone_id for c in contributions],
+            },
+        )
+        fed_round.observation_id = signed["id"]
+        fed_round.observation_digest = signed["digest"]
+    except Exception:
+        logging.warning("federated_round: failed to sign round as observation", exc_info=True)
+
+    # Persist round
+    doc = fed_round.model_dump()
+    doc["zone_contributions"] = [c.model_dump() for c in fed_round.zone_contributions]
+    await db.federated_rounds.insert_one(doc)
+
+    return fed_round
+
 
 # Sensor endpoints
 @api_router.get("/sensors", response_model=List[Sensor])

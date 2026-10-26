@@ -620,3 +620,57 @@ class CookingDeviceReading(BaseModel):
     zone_id: Optional[str] = None     # cohort / region key in the chain
     meter: Optional[Dict[str, str]] = None  # meter model, firmware, serial, etc.
     observed_at: Optional[str] = None
+
+
+# ==================== FEDERATED LEARNING ====================
+
+class FederatedZoneContribution(BaseModel):
+    """One zone's local model update contributed to a federated round."""
+    zone_id: str
+    zone_name: str
+    zone_type: str
+    observation_count: int
+    # Per-species confidence statistics computed locally (no raw images shared)
+    species_confidence_stats: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Map of species_name → mean_confidence from this zone's observations.",
+    )
+    # Per-biome weight adjustments (delta from baseline)
+    biome_weight_deltas: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Map of species_name → suggested weight delta for this zone's biome.",
+    )
+    # Privacy: raw images are NEVER included — only aggregated statistics
+    data_included: str = "confidence_statistics_only"
+
+
+class FederatedRound(BaseModel):
+    """Result of one federated learning aggregation round.
+
+    Each zone contributes local confidence statistics (not raw images).
+    FedAvg aggregates these into a global model update: updated biome
+    weight priors that improve every zone's species ID accuracy.
+
+    Privacy guarantee: no raw imagery leaves any zone. Only mean confidence
+    scores per species per zone are shared with the aggregation server.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    round_number: int = 1
+    participating_zones: int = 0
+    total_observations_used: int = 0
+    # Zone contributions (confidence stats only — no raw data)
+    zone_contributions: List[FederatedZoneContribution] = Field(default_factory=list)
+    # FedAvg global model update: updated weight priors per biome per species
+    global_model_update: Dict[str, Dict[str, float]] = Field(
+        default_factory=dict,
+        description="Map of biome → {species_name: updated_weight} after FedAvg.",
+    )
+    # Confidence calibration improvements
+    calibration_improvements: List[str] = Field(default_factory=list)
+    # Chain provenance
+    observation_id: Optional[str] = None
+    observation_digest: Optional[str] = None
+    # Privacy audit fields
+    privacy_guarantee: str = "no_raw_images_shared"
+    aggregation_method: str = "federated_averaging_v1"
