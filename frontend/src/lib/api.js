@@ -252,6 +252,13 @@ export const provenanceAPI = {
   getStats: (hours = 168) => api.get(`/public/provenance/stats?hours=${hours}`),
 };
 
+// ======================== CARBON CREDIT MRV REPORTS ========================
+export const creditsAPI = {
+  generate: (payload) => api.post("/credits/generate", payload),
+  list: (limit = 20) => api.get(`/credits?limit=${limit}`),
+  get: (reportId) => api.get(`/credits/${reportId}`),
+};
+
 // ======================== SEED ========================
 export const seedAPI = {
   seed: () => api.post("/seed"),

@@ -51,6 +51,12 @@ const navSections = [
       { to: "/notifications", icon: Bell, label: "Notifications" },
     ],
   },
+  {
+    label: "Credits",
+    items: [
+      { to: "/credits", icon: Leaf, label: "Carbon Credits" },
+    ],
+  },
 ];
 
 export default function Sidebar() {

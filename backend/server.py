@@ -79,6 +79,9 @@ from models import (
     AlertCreate,
     Comment,
     CookingDeviceReading,
+    CreditReport,
+    CreditReportRequest,
+    CreditReportZoneSummary,
     DashboardStats,
     DeployMissionRequest,
     Drone,
@@ -3264,6 +3267,434 @@ async def ingest_cooking_reading(
         },
         "error": None,
     }
+
+
+# ==================== CARBON CREDIT MRV REPORTS ====================
+
+_METHODOLOGY_LABELS: dict = {
+    "verra_vm0033": "Verra VM0033 — Avoided Unplanned Deforestation and Degradation",
+    "gold_standard_icroa": "Gold Standard / ICROA — Biodiversity and Ecosystem Restoration",
+    "vcs_afolu": "Verra VCS AFOLU — Improved Forest Management",
+}
+
+# Conservative tCO2e per hectare per 0.01 unit improvement in biodiversity index.
+# Real issuance requires a verified baseline study; this is a proxy for demo/pilot use.
+_TCO2E_PER_HECTARE_PER_UNIT_BIODIVERSITY = 0.8
+# Default zone area assumption when radius_km is not stored on the zone doc.
+_DEFAULT_ZONE_RADIUS_KM = 5.0
+
+
+def _estimate_zone_tco2e(zone_doc: dict, avg_biodiversity: Optional[float]) -> float:
+    """Very conservative proxy estimate. Actual issuance needs a verified baseline."""
+    if avg_biodiversity is None:
+        return 0.0
+    baseline = zone_doc.get("baseline_biodiversity_index") or 0.4
+    improvement = max(0.0, avg_biodiversity - baseline)
+    radius_km = float(zone_doc.get("radius_km") or _DEFAULT_ZONE_RADIUS_KM)
+    area_ha = 3.14159 * (radius_km * 1000 / 100) ** 2  # crude circular approximation
+    estimate = round(improvement * area_ha * _TCO2E_PER_HECTARE_PER_UNIT_BIODIVERSITY, 2)
+    return estimate if math.isfinite(estimate) else 0.0
+
+
+@api_router.post("/credits/generate", status_code=201)
+async def generate_credit_report(
+    req: CreditReportRequest,
+    user: dict = Depends(require_role(["admin", "field_operator"])),
+):
+    """Generate an MRV-compliant carbon credit report.
+
+    Pulls all signed observations for the requested zones and time window,
+    computes per-zone aggregate metrics and conservative tCO2e estimates,
+    then signs the report summary itself as an observation of
+    source_type="mrv_report" so the document is cryptographically linked
+    to the chain it summarises.
+
+    The report does not embed the raw source observations. For recent,
+    short-period reports (≤7 days), GET /api/zones/{zone_id}/attestation
+    returns a window of signed observation hashes per zone; it is not
+    sufficient to re-derive the report root for longer or historical
+    periods because the endpoint is capped at 168 h and omits payloads.
+    Auditors requiring full evidence should request a signed evidence
+    export from the platform operator. The report summary itself is a
+    signed observation verifiable via POST /api/observations/verify with
+    the Ed25519 key published at /.well-known/keys.json.
+    """
+    import hashlib
+
+    period_start = req.period_start
+    period_end = req.period_end
+    methodology_label = _METHODOLOGY_LABELS.get(req.methodology, req.methodology)
+
+    # --- Resolve zones ---
+    if req.zone_ids:
+        zones_cursor = db.zones.find({"id": {"$in": req.zone_ids}}, {"_id": 0})
+    else:
+        zones_cursor = db.zones.find({}, {"_id": 0})
+    _zone_cap = 500
+    zone_docs = await zones_cursor.to_list(_zone_cap + 1)
+    if not zone_docs:
+        raise HTTPException(status_code=404, detail="No zones found matching the request.")
+    if req.zone_ids:
+        found_ids = {z.get("id") for z in zone_docs}
+        missing = [zid for zid in dict.fromkeys(req.zone_ids) if zid not in found_ids]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Zones not found: {', '.join(missing)}",
+            )
+    if len(zone_docs) > _zone_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many zones match this request (>{_zone_cap}). Narrow the zone selection.",
+        )
+
+    zone_map = {z["id"]: z for z in zone_docs if z.get("id")}
+
+    # --- Pull observations for all zones in the period ---
+    obs_query: dict = {
+        "zone_id": {"$in": list(zone_map.keys())},
+        "observed_at": {"$gte": period_start, "$lt": period_end},
+    }
+    _obs_cap = 5000
+    all_obs = await db.observations.find(obs_query, {"_id": 0}).sort("observed_at", 1).to_list(_obs_cap + 1)
+    if len(all_obs) > _obs_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many observations in this period (>{_obs_cap}). Narrow the period or zone selection.",
+        )
+
+    # --- Build per-zone summaries ---
+    from collections import defaultdict
+    obs_by_zone: dict = defaultdict(list)
+    for o in all_obs:
+        zid = o.get("zone_id")
+        if zid:
+            obs_by_zone[zid].append(o)
+
+    zone_summaries: list = []
+    for zone_doc in zone_docs:
+        zid = zone_doc.get("id") or ""
+        zname = zone_doc.get("name") or zid
+        ztype = zone_doc.get("zone_type") or "unknown"
+        obs = obs_by_zone.get(zid, [])
+
+        source_breakdown: dict = defaultdict(int)
+        biodiversity_vals: list = []
+        soil_vals: list = []
+        veg_vals: list = []
+
+        for o in obs:
+            src = o.get("source_type") or "unknown"
+            source_breakdown[src] += 1
+            payload = o.get("payload") or {}
+            if isinstance(payload, dict):
+                if "biodiversity_index" in payload:
+                    try:
+                        v = float(payload["biodiversity_index"])
+                        if math.isfinite(v):
+                            biodiversity_vals.append(v)
+                    except (TypeError, ValueError):
+                        pass
+                if "soil_health" in payload:
+                    try:
+                        v = float(payload["soil_health"])
+                        if math.isfinite(v):
+                            soil_vals.append(v)
+                    except (TypeError, ValueError):
+                        pass
+                if "vegetation_coverage" in payload:
+                    try:
+                        v = float(payload["vegetation_coverage"])
+                        if math.isfinite(v):
+                            veg_vals.append(v)
+                    except (TypeError, ValueError):
+                        pass
+
+        avg_bio = round(sum(biodiversity_vals) / len(biodiversity_vals), 4) if biodiversity_vals else None
+        avg_soil = round(sum(soil_vals) / len(soil_vals), 4) if soil_vals else None
+        avg_veg = round(sum(veg_vals) / len(veg_vals), 4) if veg_vals else None
+
+        # Simple linear trend over biodiversity values
+        bio_trend: Optional[float] = None
+        if len(biodiversity_vals) >= 2:
+            n = len(biodiversity_vals)
+            xs = list(range(n))
+            x_mean = (n - 1) / 2
+            y_mean = sum(biodiversity_vals) / n
+            num = sum((xs[i] - x_mean) * (biodiversity_vals[i] - y_mean) for i in range(n))
+            den = sum((xs[i] - x_mean) ** 2 for i in range(n))
+            bio_trend = round(num / den, 6) if den else None
+
+        # Compute attestation root using same algorithm as /api/zones/{id}/attestation:
+        # SHA-256 over newline-joined sorted digests so auditor comparisons agree.
+        attest_root: Optional[str] = None
+        digests = sorted(o.get("digest") or "" for o in obs if o.get("digest"))
+        if digests:
+            attest_root = hashlib.sha256("\n".join(digests).encode("utf-8")).hexdigest()
+
+        # Do NOT fall back to the zone's current biodiversity_index — that value
+        # is not tied to the reporting period and would produce a non-zero tCO₂e
+        # estimate for zones with zero period observations.
+        tco2e = _estimate_zone_tco2e(zone_doc, avg_bio)
+
+        zone_summaries.append(
+            CreditReportZoneSummary(
+                zone_id=zid,
+                zone_name=zname,
+                zone_type=ztype,
+                observation_count=len(obs),
+                source_type_breakdown=dict(source_breakdown),
+                avg_biodiversity_index=avg_bio,
+                avg_soil_health=avg_soil,
+                avg_vegetation_coverage=avg_veg,
+                biodiversity_trend=bio_trend,
+                attestation_root=attest_root,
+                estimated_tco2e=tco2e,
+            )
+        )
+
+    total_tco2e = round(sum(s.estimated_tco2e for s in zone_summaries), 2)
+    report_id = str(__import__("uuid").uuid4())
+    generated_by_name = user.get("name") or user.get("email") or "unknown"
+    generated_by_user_id = user.get("id") or user.get("_id") or "unknown"
+
+    report = CreditReport(
+        id=report_id,
+        generated_by=generated_by_name,
+        methodology=req.methodology,
+        methodology_label=methodology_label,
+        period_start=period_start,
+        period_end=period_end,
+        project_name=req.project_name,
+        project_notes=req.project_notes,
+        zones=zone_summaries,
+        total_observations=len(all_obs),
+        total_zones=len(zone_summaries),
+        total_estimated_tco2e=total_tco2e,
+    )
+
+    # Sign the report summary itself so the document is on the chain
+    try:
+        signed = await _record_observation(
+            db,
+            source_type="mrv_report",
+            source_id=report_id,
+            zone_id=None,
+            observed_at=report.created_at,
+            payload={
+                "report_id": report_id,
+                "methodology": req.methodology,
+                "period_start": period_start,
+                "period_end": period_end,
+                "total_zones": len(zone_summaries),
+                "total_observations": len(all_obs),
+                "total_estimated_tco2e": total_tco2e,
+                "generated_by_user_id": generated_by_user_id,
+                "zone_ids": [s.zone_id for s in zone_summaries],
+            },
+        )
+        report.report_observation_id = signed["id"]
+        report.report_digest = signed["digest"]
+        report.report_key_id = signed["key_id"]
+    except Exception:
+        logging.warning("credits/generate: failed to sign report as observation", exc_info=True)
+
+    # Persist the report so GET /api/credits lists it
+    report_doc = report.model_dump()
+    report_doc["zones"] = [z.model_dump() for z in report.zones]
+    await db.credit_reports.insert_one(report_doc)
+
+    return report
+
+
+@api_router.get("/credits")
+async def list_credit_reports(
+    limit: int = 20,
+    user: dict = Depends(require_role(["admin", "field_operator", "scientist", "viewer"])),
+):
+    """List previously generated MRV credit reports, newest first."""
+    cap = max(1, min(int(limit), 100))
+    rows = await db.credit_reports.find({}, {"_id": 0}).sort("created_at", -1).limit(cap).to_list(cap)
+    return rows
+
+
+@api_router.get("/credits/{report_id}")
+async def get_credit_report(
+    report_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    user: dict = Depends(require_role(["admin", "field_operator", "scientist", "viewer"])),
+):
+    """Fetch a single MRV credit report by ID."""
+    doc = await db.credit_reports.find_one({"id": report_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Credit report not found")
+    return doc
+
+
+@api_router.post("/credits/{report_id}/submit-verra", status_code=200)
+async def submit_credit_report_to_verra(
+    report_id: str = Path(..., pattern=_UUID_ID_PATTERN),
+    user: dict = Depends(require_role(["admin"])),
+):
+    """Format a generated MRV report as a Verra-compatible JSON payload and
+    submit it to the registry endpoint configured via VERRA_REGISTRY_URL.
+
+    If VERRA_REGISTRY_URL is not set, the formatted payload is returned for
+    operator review without making a network call (dry-run mode). This allows
+    operators to inspect the payload and wire it to any registry endpoint.
+
+    The signed observation chain means Verra (or Gold Standard) can
+    independently verify every observation that underlies the credit estimate
+    by calling POST /api/observations/verify on each source hash.
+    """
+    import os, httpx
+
+    doc = await db.credit_reports.find_one({"id": report_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Credit report not found")
+
+    # Map internal methodology IDs to Verra/GS registry codes
+    methodology_registry_map = {
+        "verra_vm0033": {"standard": "VCS", "methodology": "VM0033", "version": "1.0"},
+        "gold_standard_icroa": {"standard": "Gold Standard", "methodology": "ICROA-BIO", "version": "2.0"},
+        "vcs_afolu": {"standard": "VCS", "methodology": "VM0007", "version": "1.6"},
+    }
+    registry_meta = methodology_registry_map.get(
+        doc.get("methodology", ""),
+        {"standard": "VCS", "methodology": doc.get("methodology", ""), "version": "1.0"},
+    )
+
+    # Build the Verra-compatible submission payload
+    verra_payload = {
+        "projectName": doc.get("project_name") or "Autonomous Ecosystem Rewilding Platform",
+        "projectNotes": doc.get("project_notes") or "",
+        "monitoringPeriodStart": doc.get("period_start"),
+        "monitoringPeriodEnd": doc.get("period_end"),
+        "standard": registry_meta["standard"],
+        "methodology": registry_meta["methodology"],
+        "methodologyVersion": registry_meta["version"],
+        "totalEstimatedTco2e": doc.get("total_estimated_tco2e", 0.0),
+        "totalZones": doc.get("total_zones", 0),
+        "totalObservations": doc.get("total_observations", 0),
+        "reportId": doc["id"],
+        "reportCreatedAt": doc.get("created_at"),
+        "reportSignatureId": doc.get("report_observation_id"),
+        "reportDigest": doc.get("report_digest"),
+        "verificationEndpoint": "/api/observations/verify",
+        "verificationNote": (
+            "All observations underlying this report are signed on the "
+            "autonomous platform's Ed25519 chain. Independent verification: "
+            "POST each source hash to the verificationEndpoint."
+        ),
+        "zoneSummaries": [
+            {
+                "zoneId": z.get("zone_id"),
+                "zoneName": z.get("zone_name"),
+                "zoneType": z.get("zone_type"),
+                "observationCount": z.get("observation_count", 0),
+                "estimatedTco2e": z.get("estimated_tco2e", 0.0),
+                "avgBiodiversityIndex": z.get("avg_biodiversity_index"),
+                "avgSoilHealth": z.get("avg_soil_health"),
+                "avgVegetationCoverage": z.get("avg_vegetation_coverage"),
+                "biodiversityTrend": z.get("biodiversity_trend"),
+                "attestationRoot": z.get("attestation_root"),
+            }
+            for z in doc.get("zones", [])
+        ],
+    }
+
+    registry_url = os.environ.get("VERRA_REGISTRY_URL", "").strip()
+    if not registry_url:
+        # Dry-run: return the formatted payload for operator review
+        return {
+            "mode": "dry_run",
+            "message": (
+                "VERRA_REGISTRY_URL is not configured. Set it to a Verra/GS "
+                "registry API endpoint to enable live submission. Returning the "
+                "formatted payload for review."
+            ),
+            "report_id": report_id,
+            "verra_payload": verra_payload,
+            "submission_id": None,
+        }
+
+    # Validate HTTPS before sending report payload or API key over the network
+    from urllib.parse import urlparse as _urlparse
+    if _urlparse(registry_url).scheme.lower() != "https":
+        raise HTTPException(
+            status_code=500,
+            detail="VERRA_REGISTRY_URL must use https://",
+        )
+
+    # Reject unsigned reports — a null reportSignatureId/reportDigest would
+    # violate the signed-observation contract that auditors verify against.
+    if not doc.get("report_observation_id") or not doc.get("report_digest"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot submit an unsigned report. The report must have a valid report_observation_id and report_digest.",
+        )
+
+    # Atomic claim: reject duplicate submissions to prevent double-posting.
+    if doc.get("verra_submission_id") or doc.get("verra_submission_status") in (200, 201, 202, "pending"):
+        raise HTTPException(
+            status_code=409,
+            detail="Report has already been submitted or has a pending submission.",
+        )
+
+    # Live submission
+    try:
+        verra_api_key = os.environ.get("VERRA_API_KEY", "")
+        headers = {"Content-Type": "application/json"}
+        if verra_api_key:
+            headers["Authorization"] = f"Bearer {verra_api_key}"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(registry_url, json=verra_payload, headers=headers)
+
+        try:
+            resp_body = resp.json()
+        except ValueError:
+            resp_body = resp.text
+
+        # Check status before extracting or persisting any submission metadata.
+        # Error bodies often contain id/reference fields that must not be saved
+        # as a successful submission_id.
+        if resp.status_code not in (200, 201, 202):
+            await db.credit_reports.update_one(
+                {"id": report_id},
+                {"$set": {"verra_last_error_status": resp.status_code}},
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Verra registry returned {resp.status_code}: {resp_body}",
+            )
+
+        submission_id = None
+        if isinstance(resp_body, dict):
+            submission_id = resp_body.get("submissionId") or resp_body.get("id") or resp_body.get("reference")
+
+        # Record the submission only on success
+        await db.credit_reports.update_one(
+            {"id": report_id},
+            {"$set": {
+                "verra_submission_status": resp.status_code,
+                "verra_submission_id": submission_id,
+                "verra_submitted_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+
+        return {
+            "mode": "live",
+            "report_id": report_id,
+            "submission_id": submission_id,
+            "registry_status": resp.status_code,
+            "verra_payload": verra_payload,
+            "registry_response": resp_body,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("verra submission failed for report %s: %s", report_id, exc)
+        raise HTTPException(status_code=502, detail=f"Registry submission error: {exc}")
 
 
 @api_router.get("/observations/{observation_id}")

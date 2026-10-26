@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 # ==================== AUTH MODELS ====================
@@ -620,3 +620,107 @@ class CookingDeviceReading(BaseModel):
     zone_id: Optional[str] = None     # cohort / region key in the chain
     meter: Optional[Dict[str, str]] = None  # meter model, firmware, serial, etc.
     observed_at: Optional[str] = None
+
+
+# ==================== CARBON CREDIT MRV REPORT ====================
+
+class CreditReportRequest(BaseModel):
+    """Request body for POST /api/credits/generate.
+
+    Generates an MRV-compliant carbon credit report over a time window,
+    pulling all signed observations for the given zones (or all zones when
+    zone_ids is empty) and calculating conservative credit estimates.
+    """
+    zone_ids: List[str] = Field(
+        default_factory=list,
+        description="Zone UUIDs to include. Empty list = all active zones.",
+    )
+    period_start: str = Field(
+        ...,
+        description="ISO-8601 start of the monitoring period (inclusive).",
+    )
+    period_end: str = Field(
+        ...,
+        description="ISO-8601 end of the monitoring period (exclusive).",
+    )
+    methodology: Literal["verra_vm0033", "gold_standard_icroa", "vcs_afolu"] = Field(
+        default="verra_vm0033",
+        description=(
+            "Credit methodology identifier. Supported: "
+            "verra_vm0033 (Avoided Unplanned Deforestation), "
+            "gold_standard_icroa (Biodiversity Restoration), "
+            "vcs_afolu (AFOLU improved forest management)."
+        ),
+    )
+    project_name: Optional[str] = None
+    project_notes: Optional[str] = None
+
+    @field_validator("period_start", "period_end")
+    @classmethod
+    def _normalize_period(cls, v: str) -> str:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+
+    @model_validator(mode="after")
+    def _check_period_order(self) -> "CreditReportRequest":
+        if self.period_start >= self.period_end:
+            raise ValueError("period_start must be strictly before period_end")
+        return self
+
+
+class CreditReportZoneSummary(BaseModel):
+    zone_id: str
+    zone_name: str
+    zone_type: str
+    observation_count: int
+    source_type_breakdown: Dict[str, int]
+    # Average of signed biodiversity/soil/vegetation readings over the period
+    avg_biodiversity_index: Optional[float] = None
+    avg_soil_health: Optional[float] = None
+    avg_vegetation_coverage: Optional[float] = None
+    # Simple linear trend slope (positive = improving)
+    biodiversity_trend: Optional[float] = None
+    # Aggregate attestation root (SHA-256 over all zone observations in period)
+    attestation_root: Optional[str] = None
+    # Conservative tCO2e estimate using zone area × metric improvements
+    estimated_tco2e: float = 0.0
+
+
+class CreditReport(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # Who generated the report
+    generated_by: str
+    # Report configuration
+    methodology: str
+    methodology_label: str
+    period_start: str
+    period_end: str
+    project_name: Optional[str] = None
+    project_notes: Optional[str] = None
+    # Zone summaries
+    zones: List[CreditReportZoneSummary] = Field(default_factory=list)
+    # Totals
+    total_observations: int = 0
+    total_zones: int = 0
+    total_estimated_tco2e: float = 0.0
+    # Chain provenance — the report itself is signed as an observation
+    report_observation_id: Optional[str] = None
+    report_digest: Optional[str] = None
+    report_key_id: Optional[str] = None
+    # Verification instructions
+    verification_url: str = "/api/observations/verify"
+    verification_note: str = (
+        "This report does not embed source observations and does not provide a complete "
+        "public retrieval path for re-deriving its attestation roots. "
+        "GET /api/zones/{zone_id}/attestation returns a recent window of signed "
+        "observation hashes (capped at 168 h / 7 days) without payloads; it cannot "
+        "cover the full source set for any report spanning a longer period or requiring "
+        "payload content. Auditors who need full evidence should request a signed "
+        "evidence export from the platform operator. "
+        "The report summary itself is a signed observation (report_observation_id) "
+        "verifiable via POST /api/observations/verify using the Ed25519 key at "
+        "/.well-known/keys.json."
+    )

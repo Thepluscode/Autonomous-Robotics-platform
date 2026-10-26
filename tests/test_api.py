@@ -1269,3 +1269,167 @@ def test_cooking_reading_rejects_unauthenticated(anon_api):
     )
     assert r.status_code == 401
 
+
+# ---------------------- Carbon Credit MRV Reports ----------------------------
+
+def test_generate_credit_report_all_zones(api, auth_headers, seeded):
+    """generate returns a CreditReport with signed observation_id."""
+    r = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "verra_vm0033",
+            "project_name": "Test MRV Run",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["methodology"] == "verra_vm0033"
+    assert body["total_zones"] >= 0
+    assert isinstance(body["total_estimated_tco2e"], (int, float))
+    assert isinstance(body["zones"], list)
+    # Report itself is signed onto the chain
+    assert body["report_observation_id"], "report should be signed as an observation"
+    assert body["report_digest"]
+    # Verify the report's own observation is valid
+    got = api.get(f"/observations/{body['report_observation_id']}")
+    assert got.status_code == 200
+    assert got.json()["verification"]["valid"] is True
+
+
+def test_generate_credit_report_specific_zones(api, auth_headers, seeded):
+    """When zone_ids are specified, only those zones appear in the report."""
+    # Get all zones first to pick one
+    zones_r = api.get("/zones", headers=auth_headers)
+    assert zones_r.status_code == 200
+    zones = zones_r.json()
+    if not zones:
+        pytest.skip("No seeded zones available")
+
+    target_id = zones[0]["id"]
+    r = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [target_id],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "gold_standard_icroa",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["total_zones"] == 1
+    assert body["zones"][0]["zone_id"] == target_id
+
+
+def test_list_credit_reports(api, auth_headers, seeded):
+    """List endpoint returns previously generated reports."""
+    # Generate one first
+    api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "vcs_afolu",
+        },
+        headers=auth_headers,
+    )
+    r = api.get("/credits", headers=auth_headers)
+    assert r.status_code == 200
+    reports = r.json()
+    assert len(reports) >= 1
+    assert reports[0].get("id")
+    assert reports[0].get("methodology")
+
+
+def test_get_credit_report_by_id(api, auth_headers, seeded):
+    """GET /credits/{id} returns the full report."""
+    gen = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "verra_vm0033",
+        },
+        headers=auth_headers,
+    )
+    assert gen.status_code == 201
+    report_id = gen.json()["id"]
+
+    r = api.get(f"/credits/{report_id}", headers=auth_headers)
+    assert r.status_code == 200
+    assert r.json()["id"] == report_id
+
+
+def test_generate_credit_report_rejects_unauthenticated(anon_api):
+    r = anon_api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "verra_vm0033",
+        },
+    )
+    assert r.status_code == 401
+
+
+# ---------------------- Verra submission (dry-run) ----------------------------
+
+def test_submit_credit_report_to_verra_dry_run(api, auth_headers, seeded):
+    """POST /credits/{id}/submit-verra returns a formatted Verra payload in
+    dry-run mode (no VERRA_REGISTRY_URL configured in test env)."""
+    gen = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "verra_vm0033",
+        },
+        headers=auth_headers,
+    )
+    assert gen.status_code == 201, gen.text
+    report_id = gen.json()["id"]
+
+    r = api.post(f"/credits/{report_id}/submit-verra", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Without VERRA_REGISTRY_URL set, the endpoint returns the dry-run payload
+    assert body["mode"] == "dry_run"
+    assert body["report_id"] == report_id
+    payload = body["verra_payload"]
+    assert payload["standard"] in ("VCS", "Gold Standard")
+    assert payload["methodology"]
+    assert payload["reportId"] == report_id
+    assert isinstance(payload["zoneSummaries"], list)
+    assert payload["verificationEndpoint"] == "/api/observations/verify"
+
+
+def test_submit_credit_report_verra_rejects_unauthenticated(anon_api, api, auth_headers, seeded):
+    gen = api.post(
+        "/credits/generate",
+        json={
+            "zone_ids": [],
+            "period_start": "2020-01-01T00:00:00Z",
+            "period_end": "2030-01-01T00:00:00Z",
+            "methodology": "gold_standard_icroa",
+        },
+        headers=auth_headers,
+    )
+    assert gen.status_code == 201
+    report_id = gen.json()["id"]
+    r = anon_api.post(f"/credits/{report_id}/submit-verra")
+    assert r.status_code == 401
+
+
+def test_submit_credit_report_verra_404_on_missing(api, auth_headers):
+    import uuid
+    r = api.post(f"/credits/{uuid.uuid4()}/submit-verra", headers=auth_headers)
+    assert r.status_code == 404
