@@ -713,10 +713,10 @@ class CreditReport(BaseModel):
     # Verification instructions
     verification_url: str = "/api/observations/verify"
     verification_note: str = (
-        "The report summary is a signed observation (report_observation_id). "
-        "Per-zone signed-observation aggregate roots are available via "
-        "GET /api/zones/{zone_id}/attestation. "
-        "Note: public observation endpoints are capped, may redact payloads, "
-        "and are not filtered to this report's period — auditors who need the "
-        "complete unredacted observation set should contact the platform operator."
+        "This report does not provide a complete public retrieval path for every source "
+        "observation. Public observation endpoints may return only the newest 1000 "
+        "records, may include observations outside the report period, and redact "
+        "payloads. Auditors cannot use them to verify every source observation or "
+        "re-derive the report root. The report summary itself is a signed observation "
+        "(report_observation_id)."
     )
