@@ -250,6 +250,9 @@ export const provenanceAPI = {
   // same Mongo collection auditors pull from /api/observations, so the
   // page and the chain agree by construction.
   getStats: (hours = 168) => api.get(`/public/provenance/stats?hours=${hours}`),
+  // Stateless Ed25519 verify: pass any signed observation, get back
+  // {valid, reason, key_id}. Doesn't require the observation to be in our DB.
+  verifyObservation: (observation) => api.post("/observations/verify", observation),
 };
 
 // ======================== SEED ========================
