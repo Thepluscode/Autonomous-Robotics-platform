@@ -2084,6 +2084,88 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
     if req.mission_type == "intervene":
         directives.append("Drop seed pod at zone center (subject to GO confirmation)")
 
+    # --- LLM recommendation (non-blocking) ---
+    # Ask the AI to evaluate whether to go, flag key risks, and suggest
+    # specific directives. Failure here never blocks the plan — the mission
+    # is fully usable without it.
+    ai_recommendation: Optional[dict] = None
+    try:
+        if not os.environ.get("LLM_DISABLE", "").lower() in {"1", "true", "yes"}:
+            chat = make_llm_chat(
+                session_id=f"mission-plan-{zone['id'][:8]}",
+                system_message=(
+                    "You are an autonomous rewilding mission planner. "
+                    "Given zone health metrics and planned assets, decide whether to "
+                    "execute the mission and provide crisp, actionable guidance. "
+                    "Respond ONLY with a JSON object, no prose outside it."
+                ),
+            )
+            prompt = (
+                f"Zone: {zone.get('name')} ({zone.get('zone_type')}, priority={zone.get('priority')})\n"
+                f"Biodiversity index: {biodiversity:.3f} (lower = more degraded)\n"
+                f"Soil health: {soil_health:.3f}\n"
+                f"Vegetation coverage: {zone.get('vegetation_coverage', 0.5):.3f}\n"
+                f"Mission type requested: {req.mission_type}\n"
+                f"Go score (readiness): {round(go_score, 3)}\n"
+                f"Risk score: {risk_score}\n"
+                f"Robots selected: {len(selected_robots)}, drones: {len(selected_drones)}\n"
+                f"Active geofences: {len(geofence_docs)}, conflicting missions: {active_in_zone}\n"
+                f"Operator notes: {req.notes or 'none'}\n\n"
+                "Return JSON with keys: "
+                "recommendation (go|hold|abort), "
+                "intervention_type (best match: patrol|inspect|intervene), "
+                "rationale (1-2 sentences), "
+                "key_risks (list of ≤3 strings), "
+                "success_criteria (list of ≤3 measurable strings), "
+                "urgency (low|medium|high|critical)."
+            )
+            raw = await chat.send_message(UserMessage(text=prompt))
+            # Parse JSON from LLM response — strip markdown fences if present
+            import json as _json
+            text = str(raw).strip()
+            if "```" in text:
+                text = text.split("```")[-2].strip()
+                if text.startswith("json"):
+                    text = text[4:].strip()
+            parsed = _json.loads(text)
+            ai_recommendation = {
+                "recommendation": parsed.get("recommendation", "go"),
+                "intervention_type": parsed.get("intervention_type", req.mission_type),
+                "rationale": parsed.get("rationale", ""),
+                "key_risks": parsed.get("key_risks", []),
+                "success_criteria": parsed.get("success_criteria", []),
+                "urgency": parsed.get("urgency", "medium"),
+                "llm_model": os.environ.get("LLM_MODEL") or os.environ.get("LLM_PROVIDER", "openai"),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+    except Exception as _ai_exc:
+        logging.info("_plan_mission: LLM recommendation skipped: %s", _ai_exc)
+        # Deterministic fallback — captures the same structure so the UI never
+        # has to branch on whether the LLM was available.
+        urgency = "critical" if biodiversity < 0.3 else "high" if biodiversity < 0.5 else "medium"
+        ai_recommendation = {
+            "recommendation": "go" if go_score >= MISSION_GO_SCORE_FLOOR else "hold",
+            "intervention_type": req.mission_type,
+            "rationale": (
+                f"Zone {zone.get('name')} has biodiversity index {biodiversity:.2f}. "
+                f"{'Immediate intervention recommended.' if biodiversity < 0.4 else 'Monitoring recommended.'}"
+            ),
+            "key_risks": [
+                f"Battery avg {avg_battery:.0f}% — ensure return-to-base margin",
+                f"{len(geofence_docs)} active geofence(s) — verify clearance before launch",
+            ] if avg_battery < 70 or geofence_docs else [
+                "No critical risks detected at plan time.",
+            ],
+            "success_criteria": [
+                f"Biodiversity index improves by ≥0.02 within 7 days",
+                "Full zone coverage without mission abort",
+                "All robots return with battery ≥25%",
+            ],
+            "urgency": urgency,
+            "llm_model": "fallback",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     return {
         "name": f"{req.mission_type.title()} • {zone.get('name')}",
         "zone_id": zone["id"],
@@ -2101,6 +2183,7 @@ async def _plan_mission(req: MissionGenerateRequest, user: dict) -> dict:
         "timeline": timeline,
         "directives": directives,
         "evidence": evidence,
+        "ai_recommendation": ai_recommendation,
     }
 
 
@@ -2294,6 +2377,115 @@ async def _build_post_mission_report(mission: dict, completed_at: str, audit: Li
         ],
     }
 
+@api_router.post("/missions/ai-recommend")
+async def ai_recommend_mission(request: Request, body: Optional[dict] = None):
+    """Ask the AI which zone needs intervention most urgently.
+
+    Returns a ranked list of zones with LLM-generated rationale and a
+    recommended mission type for each, without creating a Mission document.
+    This is the "what should we do" entry point that feeds the
+    zones-score → AI-recommends → operator-approves loop.
+
+    Optional body keys:
+      zone_id  — restrict to a single zone
+      question — free-text context (e.g. "we have two robots available for 3h")
+    """
+    user = await get_current_user(request)
+    safe_body = body or {}
+    zone_id_filter = safe_body.get("zone_id")
+    operator_question = safe_body.get("question", "")
+
+    if zone_id_filter:
+        zone_docs = await db.zones.find({"id": zone_id_filter}, {"_id": 0}).to_list(1)
+    else:
+        zone_docs = await db.zones.find({}, {"_id": 0}).sort("biodiversity_index", 1).to_list(10)
+
+    if not zone_docs:
+        raise HTTPException(status_code=404, detail="No zones found")
+
+    # Build a compact zone health summary for the LLM
+    zone_summaries = []
+    for z in zone_docs:
+        zone_summaries.append(
+            f"- {z.get('name')} (id={z.get('id','')[:8]}…): "
+            f"biodiversity={z.get('biodiversity_index',0):.2f}, "
+            f"soil={z.get('soil_health',0):.2f}, "
+            f"veg={z.get('vegetation_coverage',0):.2f}, "
+            f"priority={z.get('priority','?')}, "
+            f"type={z.get('zone_type','?')}"
+        )
+
+    ranked: list = []
+    llm_model_used = "fallback"
+    try:
+        if os.environ.get("LLM_DISABLE", "").lower() in {"1", "true", "yes"}:
+            raise ValueError("LLM disabled")
+        chat = make_llm_chat(
+            session_id=f"ai-recommend-{user.get('id','?')[:8]}",
+            system_message=(
+                "You are an autonomous rewilding AI. Given zone health metrics, "
+                "rank zones by urgency and recommend mission types. "
+                "Respond ONLY with a JSON array of objects, no prose outside it."
+            ),
+        )
+        prompt = (
+            "Zone health summary (sorted by ascending biodiversity — lowest = most degraded):\n"
+            + "\n".join(zone_summaries)
+            + "\n\nOperator context: " + (operator_question or "general prioritisation")
+            + "\n\nReturn a JSON ARRAY where each element has keys: "
+            "zone_id (8-char prefix), zone_name, rank (1=most urgent), "
+            "recommended_mission_type (patrol|inspect|intervene), "
+            "urgency (low|medium|high|critical), rationale (1 sentence), "
+            "expected_impact (1 sentence)."
+        )
+        raw = await chat.send_message(UserMessage(text=prompt))
+        import json as _json
+        text = str(raw).strip()
+        if "```" in text:
+            text = text.split("```")[-2].strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        parsed = _json.loads(text)
+        # Re-attach full zone_id from zone_docs by matching the prefix
+        id_map = {z.get("id", "")[:8]: z.get("id") for z in zone_docs}
+        for item in parsed:
+            prefix = (item.get("zone_id") or "")[:8]
+            item["zone_id"] = id_map.get(prefix, item.get("zone_id"))
+        ranked = parsed
+        llm_model_used = os.environ.get("LLM_MODEL") or os.environ.get("LLM_PROVIDER", "openai")
+    except Exception as _exc:
+        logging.info("ai_recommend_mission: LLM unavailable, using deterministic fallback: %s", _exc)
+        priority_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        sorted_zones = sorted(
+            zone_docs,
+            key=lambda z: (z.get("biodiversity_index", 1), -priority_order.get(z.get("priority", "medium"), 2)),
+        )
+        for i, z in enumerate(sorted_zones, 1):
+            bio = float(z.get("biodiversity_index", 0.5))
+            mtype = "intervene" if bio < 0.35 else "inspect" if bio < 0.55 else "patrol"
+            urgency = "critical" if bio < 0.3 else "high" if bio < 0.45 else "medium" if bio < 0.6 else "low"
+            ranked.append({
+                "zone_id": z.get("id"),
+                "zone_name": z.get("name"),
+                "rank": i,
+                "recommended_mission_type": mtype,
+                "urgency": urgency,
+                "rationale": (
+                    f"Biodiversity index {bio:.2f} is {'critically low' if bio < 0.35 else 'below target'}. "
+                    f"{mtype.title()} mission recommended."
+                ),
+                "expected_impact": f"Estimated +0.02–0.05 biodiversity delta over 7 days with {mtype}.",
+            })
+
+    return {
+        "recommendations": ranked,
+        "llm_model": llm_model_used,
+        "zone_count": len(zone_docs),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "operator_question": operator_question or None,
+    }
+
+
 @api_router.post("/missions/generate", response_model=Mission)
 async def generate_mission(req: MissionGenerateRequest, request: Request):
     """Plan a mission server-side. The body is intentionally minimal — the
@@ -2405,17 +2597,56 @@ async def complete_mission(request: Request, mission_id: str = Path(..., pattern
     audit = mission.get("audit_trail", [])
     audit.append(_mission_audit_event("completed", user, summary))
     report = await _build_post_mission_report(mission, now, audit)
-    await db.missions.update_one(
-        {"id": mission_id},
-        {"$set": {
-            "status": "completed",
-            "completed_at": now,
-            "post_mission_summary": summary,
-            "post_mission_report": report,
-            "audit_trail": audit,
-            "updated_at": now,
-        }}
-    )
+
+    # Sign the outcome onto the observation chain so the mission result is
+    # independently verifiable. This closes the plan→approve→execute→sign loop.
+    outcome_observation_id: Optional[str] = None
+    try:
+        counterfactual = mission.get("evidence", {}).get("counterfactual", {})
+        impact_delta = counterfactual.get("if_deploy_7d", {}).get("biodiversity_index_delta", 0)
+        signed_outcome = await _record_observation(
+            db,
+            source_type="mission_outcome",
+            source_id=mission_id,
+            zone_id=mission.get("zone_id"),
+            observed_at=now,
+            payload={
+                "mission_id": mission_id,
+                "mission_name": mission.get("name"),
+                "mission_type": mission.get("mission_type"),
+                "zone_id": mission.get("zone_id"),
+                "zone_name": mission.get("zone_name"),
+                "robot_count": len(mission.get("robot_ids", [])),
+                "drone_count": len(mission.get("drone_ids", [])),
+                "coverage_km": mission.get("coverage_km", 0),
+                "go_score": mission.get("go_score", 0),
+                "risk_score": mission.get("risk_score", 0),
+                "estimated_biodiversity_delta_7d": impact_delta,
+                "completed_by": user.get("email") or user.get("id"),
+                "ai_recommendation": mission.get("ai_recommendation"),
+            },
+        )
+        outcome_observation_id = signed_outcome["id"]
+        audit.append(_mission_audit_event(
+            "outcome_signed",
+            user,
+            f"Mission outcome signed to chain: observation_id={outcome_observation_id} digest={signed_outcome['digest'][:16]}…",
+        ))
+    except Exception:
+        logging.warning("complete_mission: failed to sign outcome as observation", exc_info=True)
+
+    update_doc = {
+        "status": "completed",
+        "completed_at": now,
+        "post_mission_summary": summary,
+        "post_mission_report": report,
+        "audit_trail": audit,
+        "updated_at": now,
+    }
+    if outcome_observation_id:
+        update_doc["outcome_observation_id"] = outcome_observation_id
+
+    await db.missions.update_one({"id": mission_id}, {"$set": update_doc})
     updated = await db.missions.find_one({"id": mission_id}, {"_id": 0})
     await _broadcast_mission_update("completed", updated)
     return _deserialize_mission(updated)

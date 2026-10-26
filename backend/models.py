@@ -384,6 +384,11 @@ class MissionCreate(BaseModel):
     timeline: List[str] = []
     directives: List[str] = []
     evidence: dict = {}
+    # LLM-generated recommendation injected at plan time. None when the LLM is
+    # not configured (offline fallback) — the plan is valid either way.
+    ai_recommendation: Optional[dict] = None
+    # Set on mission completion: the chain observation ID for the outcome.
+    outcome_observation_id: Optional[str] = None
 
 
 class Mission(MissionCreate):
